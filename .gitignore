@@ -41,3 +41,6 @@ pnpm-debug.log*
 # Rust
 **/*.rs.bk
 Cargo.lock.bak
+
+# Claude Code local session state
+.claude/
