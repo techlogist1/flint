@@ -1,3 +1,6 @@
+use crate::cache::{
+    self, CacheState, CachedSession, HeatmapCell, RangeStats, SessionDetail, TodayStats,
+};
 use crate::config::{self, Config};
 use crate::plugins::{LoadedPlugin, PluginDescriptor};
 use crate::storage;
@@ -6,7 +9,7 @@ use chrono::Utc;
 use rand::Rng;
 use serde_json::{Map, Value};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct EngineState(pub Mutex<TimerState>);
 pub struct ConfigState(pub Mutex<Config>);
@@ -131,6 +134,20 @@ fn finalize_session(
 
     let path = storage::write_session_file(state, ended_at, completed)?;
     println!("[flint] wrote session file {}", path.display());
+
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(value) = serde_json::from_str::<Value>(&content) {
+            let cache_state = app.state::<CacheState>();
+            let guard_result = cache_state.0.lock();
+            if let Ok(guard) = guard_result {
+                if let Some(conn) = guard.as_ref() {
+                    if let Err(e) = cache::upsert_from_file(conn, &value) {
+                        eprintln!("[flint] cache upsert failed: {}", e);
+                    }
+                }
+            }
+        }
+    }
 
     let _ = storage::delete_recovery();
 
@@ -530,27 +547,108 @@ pub fn plugin_storage_delete(plugin_id: String, key: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn list_sessions() -> Result<Vec<Value>, String> {
-    // Phase 5 builds the full browse UI; for now the plugin API only needs a
-    // well-formed list so getSessions() resolves.
-    let dir = storage::flint_dir()?.join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+pub fn list_sessions(cache_state: State<'_, CacheState>) -> Result<Vec<Value>, String> {
+    // The plugin API uses this via flint.getSessions(); return full JSON
+    // payloads (with intervals) by reading from the cache.
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
         return Ok(Vec::new());
     };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(v) = serde_json::from_str::<Value>(&content) {
-            out.push(v);
+    let sessions = cache::list_sessions(conn, None)?;
+    let mut out: Vec<Value> = Vec::with_capacity(sessions.len());
+    for s in sessions {
+        if let Some(detail) = cache::get_session_detail(conn, &s.id)? {
+            out.push(serde_json::to_value(detail).unwrap_or(Value::Null));
         }
     }
     Ok(out)
+}
+
+#[tauri::command]
+pub fn cache_list_sessions(
+    cache_state: State<'_, CacheState>,
+    limit: Option<i64>,
+) -> Result<Vec<CachedSession>, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(Vec::new());
+    };
+    cache::list_sessions(conn, limit)
+}
+
+#[tauri::command]
+pub fn cache_session_detail(
+    cache_state: State<'_, CacheState>,
+    id: String,
+) -> Result<Option<SessionDetail>, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(None);
+    };
+    cache::get_session_detail(conn, &id)
+}
+
+#[tauri::command]
+pub fn stats_today(cache_state: State<'_, CacheState>) -> Result<TodayStats, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(TodayStats {
+            focus_sec: 0,
+            session_count: 0,
+            questions_done: 0,
+        });
+    };
+    cache::today_stats(conn, Utc::now())
+}
+
+#[tauri::command]
+pub fn stats_range(
+    cache_state: State<'_, CacheState>,
+    scope: String,
+) -> Result<RangeStats, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(RangeStats {
+            total_focus_sec: 0,
+            total_sessions: 0,
+            total_questions: 0,
+            current_streak: 0,
+            longest_streak: 0,
+            daily: Vec::new(),
+            tags: Vec::new(),
+        });
+    };
+    let now = Utc::now();
+    let (start, end) = match scope.as_str() {
+        "week" => cache::week_range(now),
+        "month" => cache::month_range(now),
+        other => return Err(format!("unknown scope: {}", other)),
+    };
+    cache::range_stats(conn, start, end)
+}
+
+#[tauri::command]
+pub fn stats_heatmap(
+    cache_state: State<'_, CacheState>,
+    days: Option<i64>,
+) -> Result<Vec<HeatmapCell>, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let n = days.unwrap_or(182).clamp(7, 730);
+    cache::heatmap(conn, n)
+}
+
+#[tauri::command]
+pub fn rebuild_cache(cache_state: State<'_, CacheState>) -> Result<i64, String> {
+    let mut guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_mut() else {
+        return Err("cache not initialised".into());
+    };
+    cache::rebuild(conn)?;
+    conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -1,17 +1,64 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { SessionLog } from "./session-log";
+import { StatsDashboard } from "./stats-dashboard";
+import { usePlugins } from "./plugin-host";
 
-type SidebarTab = "log" | "stats";
+interface SidebarTabDef {
+  id: string;
+  label: string;
+  pluginId: string;
+}
 
 interface SidebarProps {
   visible: boolean;
   width: number;
+  activeSessionId: string | null;
+  onOpenSession: (id: string) => void;
   onOpenSettings: () => void;
 }
 
-export function Sidebar({ visible, width, onOpenSettings }: SidebarProps) {
-  const [tab, setTab] = useState<SidebarTab>("log");
+export function Sidebar({
+  visible,
+  width,
+  activeSessionId,
+  onOpenSession,
+  onOpenSettings,
+}: SidebarProps) {
+  const { plugins } = usePlugins();
+
+  const tabs: SidebarTabDef[] = useMemo(() => {
+    const out: SidebarTabDef[] = [];
+    const seen = new Set<string>();
+    for (const p of plugins) {
+      if (!p.enabled) continue;
+      if (!p.manifest.ui_slots.includes("sidebar-tab")) continue;
+      if (seen.has(p.manifest.id)) continue;
+      seen.add(p.manifest.id);
+      out.push({
+        id: tabIdFor(p.manifest.id),
+        label: tabLabelFor(p.manifest.id, p.manifest.name),
+        pluginId: p.manifest.id,
+      });
+    }
+    return out;
+  }, [plugins]);
+
+  const [activeTab, setActiveTab] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (tabs.length === 0) {
+      setActiveTab(null);
+      return;
+    }
+    setActiveTab((prev) => {
+      if (prev && tabs.some((t) => t.id === prev)) return prev;
+      return tabs[0].id;
+    });
+  }, [tabs]);
 
   if (!visible) return null;
+
+  const active = tabs.find((t) => t.id === activeTab) ?? null;
 
   return (
     <aside
@@ -19,20 +66,34 @@ export function Sidebar({ visible, width, onOpenSettings }: SidebarProps) {
       style={{ width }}
     >
       <div className="flex items-center gap-1 border-b border-[var(--border)] px-2 py-2">
-        <TabButton
-          active={tab === "log"}
-          label="Log"
-          onClick={() => setTab("log")}
-        />
-        <TabButton
-          active={tab === "stats"}
-          label="Stats"
-          onClick={() => setTab("stats")}
-        />
+        {tabs.length === 0 ? (
+          <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            No sidebar plugins
+          </span>
+        ) : (
+          tabs.map((t) => (
+            <TabButton
+              key={t.id}
+              active={activeTab === t.id}
+              label={t.label}
+              onClick={() => setActiveTab(t.id)}
+            />
+          ))
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3 text-sm text-[var(--text-secondary)]">
-        {tab === "log" ? <LogPlaceholder /> : <StatsPlaceholder />}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {active?.pluginId === "session-log" && (
+          <SessionLog
+            activeSessionId={activeSessionId}
+            onOpenSession={onOpenSession}
+          />
+        )}
+        {active?.pluginId === "stats" && <StatsDashboard />}
+        {active && active.pluginId !== "session-log" && active.pluginId !== "stats" && (
+          <CommunityTabPlaceholder label={active.label} />
+        )}
+        {!active && tabs.length === 0 && <DisabledHint />}
       </div>
 
       <div className="border-t border-[var(--border)] p-2">
@@ -75,30 +136,32 @@ function TabButton({
   );
 }
 
-function LogPlaceholder() {
+function CommunityTabPlaceholder({ label }: { label: string }) {
   return (
-    <div className="space-y-2">
-      <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-        Session Log
-      </div>
-      <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-        Past sessions will appear here. Built in Phase 5.
-      </p>
+    <div className="p-3 text-[11px] text-[var(--text-muted)]">
+      {label} is a community plugin. Its sidebar content will render when it
+      targets a built-in slot renderer.
     </div>
   );
 }
 
-function StatsPlaceholder() {
+function DisabledHint() {
   return (
-    <div className="space-y-2">
-      <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-        Stats
-      </div>
-      <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-        Focus time, streaks, and heatmap will appear here. Built in Phase 5.
-      </p>
+    <div className="p-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
+      Enable Session Log or Stats from Settings → Plugins to populate the
+      sidebar.
     </div>
   );
+}
+
+function tabIdFor(pluginId: string): string {
+  return pluginId;
+}
+
+function tabLabelFor(pluginId: string, fallback: string): string {
+  if (pluginId === "session-log") return "Log";
+  if (pluginId === "stats") return "Stats";
+  return fallback;
 }
 
 function GearIcon() {

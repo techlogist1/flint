@@ -72,6 +72,16 @@ const BUILTIN_PLUGINS: &[(&str, &str, &str)] = &[
         include_str!("../plugins/countdown/manifest.json"),
         include_str!("../plugins/countdown/index.js"),
     ),
+    (
+        "session-log",
+        include_str!("../plugins/session-log/manifest.json"),
+        include_str!("../plugins/session-log/index.js"),
+    ),
+    (
+        "stats",
+        include_str!("../plugins/stats/manifest.json"),
+        include_str!("../plugins/stats/index.js"),
+    ),
 ];
 
 pub fn load_builtins() -> Vec<LoadedPlugin> {
@@ -173,9 +183,30 @@ mod tests {
         assert!(ids.contains(&"pomodoro"), "pomodoro missing from builtins");
         assert!(ids.contains(&"stopwatch"), "stopwatch missing from builtins");
         assert!(ids.contains(&"countdown"), "countdown missing from builtins");
+        assert!(
+            ids.contains(&"session-log"),
+            "session-log missing from builtins"
+        );
+        assert!(ids.contains(&"stats"), "stats missing from builtins");
         for p in &loaded {
             assert_eq!(p.manifest.plugin_type, "default");
             assert!(!p.source.is_empty(), "{} source empty", p.manifest.id);
+        }
+    }
+
+    #[test]
+    fn session_log_and_stats_register_sidebar_tabs() {
+        let loaded = load_builtins();
+        for id in ["session-log", "stats"] {
+            let plugin = loaded
+                .iter()
+                .find(|p| p.manifest.id == id)
+                .unwrap_or_else(|| panic!("{} missing", id));
+            assert!(
+                plugin.manifest.ui_slots.iter().any(|s| s == "sidebar-tab"),
+                "{} is missing sidebar-tab slot",
+                id
+            );
         }
     }
 

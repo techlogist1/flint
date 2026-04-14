@@ -1,0 +1,12 @@
+{
+  "id": "session-log",
+  "name": "Session Log",
+  "version": "1.0.0",
+  "description": "Browse past sessions from ~/.flint/sessions/ with tag and date filtering.",
+  "author": "Flint",
+  "type": "default",
+  "entry": "index.js",
+  "ui_slots": ["sidebar-tab"],
+  "events": ["session:complete", "session:cancel"],
+  "config_schema": {}
+}

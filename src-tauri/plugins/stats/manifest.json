@@ -1,0 +1,12 @@
+{
+  "id": "stats",
+  "name": "Stats Dashboard",
+  "version": "1.0.0",
+  "description": "Today/week/month analytics, tag distribution, streak counter, and GitHub-style heatmap.",
+  "author": "Flint",
+  "type": "default",
+  "entry": "index.js",
+  "ui_slots": ["sidebar-tab"],
+  "events": ["session:complete"],
+  "config_schema": {}
+}

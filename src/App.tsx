@@ -7,10 +7,11 @@ import { SettingsPanel } from "./components/settings-panel";
 import { StatusBar } from "./components/status-bar";
 import { PluginHost } from "./components/plugin-host";
 import { Notifications } from "./components/notifications";
+import { SessionDetailPanel } from "./components/session-detail";
 import type { Config, Mode } from "./lib/types";
 import { MODES } from "./lib/types";
 
-type View = "timer" | "settings";
+type View = "timer" | "settings" | "session-detail";
 
 function AppShell() {
   const { state, intervalRemaining } = useTimer();
@@ -24,6 +25,19 @@ function AppShell() {
   const [tagInputOpen, setTagInputOpen] = useState(false);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [hintDismissed, setHintDismissed] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  const openSession = useCallback((id: string) => {
+    setActiveSessionId(id);
+    setView("session-detail");
+    setStopConfirmOpen(false);
+    setTagInputOpen(false);
+  }, []);
+
+  const closeSessionDetail = useCallback(() => {
+    setActiveSessionId(null);
+    setView("timer");
+  }, []);
 
   // Load config + flint dir once
   useEffect(() => {
@@ -111,12 +125,13 @@ function AppShell() {
         }
         if (!e.shiftKey && k === "t") {
           e.preventDefault();
-          if (view !== "settings") setTagInputOpen(true);
+          if (view === "timer") setTagInputOpen(true);
           return;
         }
         if (!e.shiftKey && k === ",") {
           e.preventDefault();
           setView((v) => (v === "settings" ? "timer" : "settings"));
+          setActiveSessionId(null);
           setStopConfirmOpen(false);
           return;
         }
@@ -145,6 +160,10 @@ function AppShell() {
           setView("timer");
           return;
         }
+        if (view === "session-detail") {
+          closeSessionDetail();
+          return;
+        }
         if (state && state.status !== "idle") {
           setStopConfirmOpen(true);
           return;
@@ -155,7 +174,7 @@ function AppShell() {
       if (inInput) return;
 
       if (e.key === "Enter") {
-        if (view === "settings") return;
+        if (view === "settings" || view === "session-detail") return;
         e.preventDefault();
         if (stopConfirmOpen) {
           confirmStop();
@@ -170,7 +189,13 @@ function AppShell() {
       }
 
       if (e.key === " " || e.code === "Space") {
-        if (view === "settings" || stopConfirmOpen || tagInputOpen) return;
+        if (
+          view === "settings" ||
+          view === "session-detail" ||
+          stopConfirmOpen ||
+          tagInputOpen
+        )
+          return;
         e.preventDefault();
         if (!state) return;
         if (state.status === "idle") {
@@ -197,6 +222,7 @@ function AppShell() {
     tagInputOpen,
     startSession,
     confirmStop,
+    closeSessionDetail,
   ]);
 
   const sidebarWidth = config?.appearance.sidebar_width ?? 220;
@@ -206,14 +232,17 @@ function AppShell() {
       <Sidebar
         visible={sidebarVisible}
         width={sidebarWidth}
+        activeSessionId={activeSessionId}
+        onOpenSession={openSession}
         onOpenSettings={() => {
           setView("settings");
+          setActiveSessionId(null);
           setStopConfirmOpen(false);
         }}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        {view === "timer" ? (
+        {view === "timer" && (
           <>
             <div className="flex min-h-0 flex-1 flex-col">
               <TopBar
@@ -237,20 +266,25 @@ function AppShell() {
             </div>
             <StatusBar state={state} selectedMode={selectedMode} />
           </>
-        ) : (
-          config && (
-            <SettingsPanel
-              initial={config}
-              flintDir={flintDir}
-              onClose={() => setView("timer")}
-              onSaved={(cfg) => {
-                setConfig(cfg);
-                if (MODES.includes(cfg.core.default_mode as Mode)) {
-                  setSelectedMode(cfg.core.default_mode as Mode);
-                }
-              }}
-            />
-          )
+        )}
+        {view === "settings" && config && (
+          <SettingsPanel
+            initial={config}
+            flintDir={flintDir}
+            onClose={() => setView("timer")}
+            onSaved={(cfg) => {
+              setConfig(cfg);
+              if (MODES.includes(cfg.core.default_mode as Mode)) {
+                setSelectedMode(cfg.core.default_mode as Mode);
+              }
+            }}
+          />
+        )}
+        {view === "session-detail" && activeSessionId && (
+          <SessionDetailPanel
+            sessionId={activeSessionId}
+            onClose={closeSessionDetail}
+          />
         )}
       </main>
     </div>

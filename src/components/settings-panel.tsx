@@ -195,10 +195,7 @@ export function SettingsPanel({
 
           <Section title="Data">
             <ReadOnlyRow label="Data directory" value={flintDir} mono />
-            <p className="text-[11px] text-[var(--text-muted)]">
-              Session files, config, and recovery all live here. Folder
-              actions and cache rebuild land in Phase 5.
-            </p>
+            <RebuildCacheRow />
           </Section>
         </div>
       </div>
@@ -326,6 +323,47 @@ function ReadOnlyRow({
           <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
             fixed
           </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RebuildCacheRow() {
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const rebuild = async () => {
+    setPending(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const count = await invoke<number>("rebuild_cache");
+      setMessage(`Rebuilt from ${count} session file${count === 1 ? "" : "s"}.`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-[200px_1fr] items-center gap-4">
+      <label className="text-xs text-[var(--text-secondary)]">SQLite cache</label>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={rebuild}
+          disabled={pending}
+          className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:text-[var(--text-primary)] disabled:opacity-50"
+        >
+          {pending ? "Rebuilding…" : "Rebuild"}
+        </button>
+        {message && (
+          <span className="text-[11px] text-[var(--success)]">{message}</span>
+        )}
+        {error && (
+          <span className="text-[11px] text-[var(--danger)]">{error}</span>
         )}
       </div>
     </div>

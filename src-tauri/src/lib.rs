@@ -1,3 +1,4 @@
+mod cache;
 mod commands;
 mod config;
 mod plugins;
@@ -7,6 +8,7 @@ mod timer;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use cache::CacheState;
 use commands::{ConfigState, EngineState, PluginRegistry};
 use tauri::{AppHandle, Emitter, Manager};
 use timer::{TimerState, TimerStatus};
@@ -142,10 +144,21 @@ pub fn run() {
             .join(", ")
     );
 
+    let cache_state = CacheState::new();
+    match cache::initialize() {
+        Ok(conn) => {
+            if let Ok(mut guard) = cache_state.0.lock() {
+                *guard = Some(conn);
+            }
+        }
+        Err(e) => eprintln!("[flint] cache init failed: {}", e),
+    }
+
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
         .manage(ConfigState(Mutex::new(cfg)))
         .manage(PluginRegistry(Mutex::new(loaded_plugins)))
+        .manage(cache_state)
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -179,6 +192,12 @@ pub fn run() {
             commands::plugin_storage_set,
             commands::plugin_storage_delete,
             commands::list_sessions,
+            commands::cache_list_sessions,
+            commands::cache_session_detail,
+            commands::stats_today,
+            commands::stats_range,
+            commands::stats_heatmap,
+            commands::rebuild_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
