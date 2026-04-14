@@ -5,12 +5,14 @@ import { Sidebar } from "./components/sidebar";
 import { TimerDisplay } from "./components/timer-display";
 import { SettingsPanel } from "./components/settings-panel";
 import { StatusBar } from "./components/status-bar";
+import { PluginHost } from "./components/plugin-host";
+import { Notifications } from "./components/notifications";
 import type { Config, Mode } from "./lib/types";
 import { MODES } from "./lib/types";
 
 type View = "timer" | "settings";
 
-function App() {
+function AppShell() {
   const { state, intervalRemaining } = useTimer();
   const [config, setConfig] = useState<Config | null>(null);
   const [flintDir, setFlintDir] = useState<string>("");
@@ -276,6 +278,15 @@ function TopBar({
       </div>
       <div className="w-8" />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <PluginHost>
+      <AppShell />
+      <Notifications />
+    </PluginHost>
   );
 }
 

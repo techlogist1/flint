@@ -51,6 +51,9 @@ export interface Config {
     close_to_tray: boolean;
     show_timer_in_tray: boolean;
   };
+  plugins: {
+    enabled: Record<string, boolean>;
+  };
 }
 
 export const MODES: Mode[] = ["pomodoro", "stopwatch", "countdown"];

@@ -1,12 +1,13 @@
 mod commands;
 mod config;
+mod plugins;
 mod storage;
 mod timer;
 
 use std::sync::Mutex;
 use std::time::Duration;
 
-use commands::{ConfigState, EngineState};
+use commands::{ConfigState, EngineState, PluginRegistry};
 use tauri::{AppHandle, Emitter, Manager};
 use timer::{TimerState, TimerStatus};
 
@@ -130,9 +131,21 @@ pub fn run() {
         );
     }
 
+    let loaded_plugins = plugins::load_all(&flint_dir.join("plugins"));
+    println!(
+        "[flint] loaded {} plugin(s): {}",
+        loaded_plugins.len(),
+        loaded_plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
         .manage(ConfigState(Mutex::new(cfg)))
+        .manage(PluginRegistry(Mutex::new(loaded_plugins)))
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -158,6 +171,14 @@ pub fn run() {
             commands::get_config,
             commands::update_config,
             commands::get_flint_dir,
+            commands::list_plugins,
+            commands::set_plugin_enabled,
+            commands::get_plugin_config,
+            commands::set_plugin_config,
+            commands::plugin_storage_get,
+            commands::plugin_storage_set,
+            commands::plugin_storage_delete,
+            commands::list_sessions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

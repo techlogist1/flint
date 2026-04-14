@@ -1,0 +1,12 @@
+{
+  "id": "stopwatch",
+  "name": "Stopwatch",
+  "version": "1.0.0",
+  "description": "Simple count-up timer with a single continuous interval.",
+  "author": "Flint",
+  "type": "default",
+  "entry": "index.js",
+  "ui_slots": [],
+  "events": ["session:start"],
+  "config_schema": {}
+}

@@ -1,13 +1,16 @@
 use crate::config::{self, Config};
+use crate::plugins::{LoadedPlugin, PluginDescriptor};
 use crate::storage;
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::Utc;
 use rand::Rng;
+use serde_json::{Map, Value};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 pub struct EngineState(pub Mutex<TimerState>);
 pub struct ConfigState(pub Mutex<Config>);
+pub struct PluginRegistry(pub Mutex<Vec<LoadedPlugin>>);
 
 fn generate_id() -> String {
     let n: u32 = rand::thread_rng().gen();
@@ -330,4 +333,261 @@ pub fn update_config(
 #[tauri::command]
 pub fn get_flint_dir() -> Result<String, String> {
     storage::flint_dir().map(|p| p.display().to_string())
+}
+
+fn plugin_is_enabled(cfg: &Config, id: &str, builtin: bool) -> bool {
+    cfg.plugins
+        .enabled
+        .get(id)
+        .copied()
+        .unwrap_or(builtin)
+}
+
+#[tauri::command]
+pub fn list_plugins(
+    registry: State<'_, PluginRegistry>,
+    config: State<'_, ConfigState>,
+) -> Result<Vec<PluginDescriptor>, String> {
+    let plugins = registry.0.lock().map_err(|e| e.to_string())?;
+    let cfg = config.0.lock().map_err(|e| e.to_string())?;
+    let list = plugins
+        .iter()
+        .map(|p| PluginDescriptor {
+            manifest: p.manifest.clone(),
+            source: p.source.clone(),
+            enabled: plugin_is_enabled(&cfg, &p.manifest.id, p.builtin),
+            builtin: p.builtin,
+        })
+        .collect();
+    Ok(list)
+}
+
+#[tauri::command]
+pub fn set_plugin_enabled(
+    plugin_id: String,
+    enabled: bool,
+    config: State<'_, ConfigState>,
+) -> Result<(), String> {
+    let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
+    cfg.plugins.enabled.insert(plugin_id, enabled);
+    let dir = storage::flint_dir()?;
+    config::save(&dir, &cfg)?;
+    Ok(())
+}
+
+fn resolve_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = value;
+    for part in path.split('.') {
+        cur = cur.get(part)?;
+    }
+    Some(cur)
+}
+
+fn set_path(value: &mut Value, path: &str, new_val: Value) -> Result<(), String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cur = value;
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            if let Value::Object(map) = cur {
+                map.insert((*part).to_string(), new_val);
+                return Ok(());
+            }
+            return Err(format!("path {} segment {} is not an object", path, part));
+        }
+        cur = cur
+            .get_mut(*part)
+            .ok_or_else(|| format!("path {} missing segment {}", path, part))?;
+    }
+    Err(format!("path {} is empty", path))
+}
+
+#[tauri::command]
+pub fn get_plugin_config(
+    plugin_id: String,
+    registry: State<'_, PluginRegistry>,
+    config: State<'_, ConfigState>,
+) -> Result<Value, String> {
+    let plugins = registry.0.lock().map_err(|e| e.to_string())?;
+    let plugin = plugins
+        .iter()
+        .find(|p| p.manifest.id == plugin_id)
+        .ok_or_else(|| format!("unknown plugin: {}", plugin_id))?;
+    let schema_keys: Vec<String> = plugin.manifest.config_schema.keys().cloned().collect();
+    let section = plugin.manifest.config_section.clone();
+    drop(plugins);
+
+    let cfg = config.0.lock().map_err(|e| e.to_string())?;
+    let full = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+    drop(cfg);
+
+    let section_value = match section {
+        Some(s) => resolve_path(&full, &s).cloned().unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+
+    let mut out = Map::new();
+    if let Value::Object(section_obj) = section_value {
+        for key in schema_keys {
+            if let Some(v) = section_obj.get(&key) {
+                out.insert(key, v.clone());
+            }
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+#[tauri::command]
+pub fn set_plugin_config(
+    plugin_id: String,
+    key: String,
+    value: Value,
+    registry: State<'_, PluginRegistry>,
+    config: State<'_, ConfigState>,
+) -> Result<Value, String> {
+    let plugins = registry.0.lock().map_err(|e| e.to_string())?;
+    let plugin = plugins
+        .iter()
+        .find(|p| p.manifest.id == plugin_id)
+        .ok_or_else(|| format!("unknown plugin: {}", plugin_id))?;
+    if !plugin.manifest.config_schema.contains_key(&key) {
+        return Err(format!(
+            "key '{}' not in config schema for plugin '{}'",
+            key, plugin_id
+        ));
+    }
+    let section = plugin
+        .manifest
+        .config_section
+        .clone()
+        .ok_or_else(|| format!("plugin '{}' has no config_section", plugin_id))?;
+    drop(plugins);
+
+    let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
+    let mut full = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+    set_path(&mut full, &format!("{}.{}", section, key), value.clone())?;
+    let new_cfg: Config = serde_json::from_value(full).map_err(|e| e.to_string())?;
+    *cfg = new_cfg.clone();
+
+    let dir = storage::flint_dir()?;
+    config::save(&dir, &cfg)?;
+    Ok(value)
+}
+
+fn plugin_storage_dir(plugin_id: &str) -> Result<std::path::PathBuf, String> {
+    if plugin_id.is_empty()
+        || plugin_id.contains('/')
+        || plugin_id.contains('\\')
+        || plugin_id.contains("..")
+    {
+        return Err(format!("invalid plugin id: {}", plugin_id));
+    }
+    let dir = storage::flint_dir()?
+        .join("plugins")
+        .join(plugin_id)
+        .join("data");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {}", dir.display(), e))?;
+    Ok(dir)
+}
+
+fn plugin_storage_key_path(
+    plugin_id: &str,
+    key: &str,
+) -> Result<std::path::PathBuf, String> {
+    if key.is_empty() || key.contains('/') || key.contains('\\') || key.contains("..") {
+        return Err(format!("invalid storage key: {}", key));
+    }
+    Ok(plugin_storage_dir(plugin_id)?.join(format!("{}.json", key)))
+}
+
+#[tauri::command]
+pub fn plugin_storage_get(plugin_id: String, key: String) -> Result<Value, String> {
+    let path = plugin_storage_key_path(&plugin_id, &key)?;
+    if !path.exists() {
+        return Ok(Value::Null);
+    }
+    let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn plugin_storage_set(
+    plugin_id: String,
+    key: String,
+    value: Value,
+) -> Result<(), String> {
+    let path = plugin_storage_key_path(&plugin_id, &key)?;
+    let data = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn plugin_storage_delete(plugin_id: String, key: String) -> Result<(), String> {
+    let path = plugin_storage_key_path(&plugin_id, &key)?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_sessions() -> Result<Vec<Value>, String> {
+    // Phase 5 builds the full browse UI; for now the plugin API only needs a
+    // well-formed list so getSessions() resolves.
+    let dir = storage::flint_dir()?.join("sessions");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(v) = serde_json::from_str::<Value>(&content) {
+            out.push(v);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn resolve_nested_path() {
+        let v = json!({
+            "pomodoro": { "focus_min": 25, "break_min": 5 },
+            "core": { "default_mode": "pomodoro" }
+        });
+        assert_eq!(
+            resolve_path(&v, "pomodoro.focus_min"),
+            Some(&json!(25))
+        );
+        assert_eq!(
+            resolve_path(&v, "core.default_mode"),
+            Some(&json!("pomodoro"))
+        );
+        assert_eq!(resolve_path(&v, "pomodoro.missing"), None);
+    }
+
+    #[test]
+    fn set_nested_path() {
+        let mut v = json!({
+            "pomodoro": { "focus_min": 25 }
+        });
+        set_path(&mut v, "pomodoro.focus_min", json!(45)).unwrap();
+        assert_eq!(v["pomodoro"]["focus_min"], json!(45));
+    }
+
+    #[test]
+    fn set_path_rejects_missing_segment() {
+        let mut v = json!({ "pomodoro": { "focus_min": 25 } });
+        let result = set_path(&mut v, "unknown.key", json!(1));
+        assert!(result.is_err());
+    }
 }

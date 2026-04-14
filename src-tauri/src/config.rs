@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -11,6 +12,7 @@ pub struct Config {
     pub keybindings: Keybindings,
     pub pomodoro: Pomodoro,
     pub tray: Tray,
+    pub plugins: Plugins,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +123,12 @@ impl Default for Tray {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Plugins {
+    pub enabled: HashMap<String, bool>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -130,6 +138,7 @@ impl Default for Config {
             keybindings: Keybindings::default(),
             pomodoro: Pomodoro::default(),
             tray: Tray::default(),
+            plugins: Plugins::default(),
         }
     }
 }

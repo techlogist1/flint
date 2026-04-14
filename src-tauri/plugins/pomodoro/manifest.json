@@ -1,0 +1,52 @@
+{
+  "id": "pomodoro",
+  "name": "Pomodoro",
+  "version": "1.0.0",
+  "description": "Focus/break interval cycling with long-break rotation and auto-start controls.",
+  "author": "Flint",
+  "type": "default",
+  "entry": "index.js",
+  "ui_slots": ["settings"],
+  "events": ["session:start", "interval:end", "session:complete"],
+  "config_section": "pomodoro",
+  "config_schema": {
+    "focus_min": {
+      "type": "number",
+      "default": 25,
+      "label": "Focus duration (min)",
+      "min": 1,
+      "max": 180
+    },
+    "break_min": {
+      "type": "number",
+      "default": 5,
+      "label": "Break duration (min)",
+      "min": 1,
+      "max": 60
+    },
+    "long_break_min": {
+      "type": "number",
+      "default": 15,
+      "label": "Long break (min)",
+      "min": 1,
+      "max": 120
+    },
+    "cycles_before_long": {
+      "type": "number",
+      "default": 4,
+      "label": "Cycles before long break",
+      "min": 1,
+      "max": 12
+    },
+    "auto_start_breaks": {
+      "type": "boolean",
+      "default": true,
+      "label": "Auto-start breaks"
+    },
+    "auto_start_focus": {
+      "type": "boolean",
+      "default": false,
+      "label": "Auto-start focus after break"
+    }
+  }
+}

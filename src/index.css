@@ -48,3 +48,14 @@ body {
   background-color: var(--accent-subtle);
   color: var(--text-primary);
 }
+
+@keyframes flint-toast {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

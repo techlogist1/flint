@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Config } from "../lib/types";
+import { PluginSettingsSection } from "./plugin-settings";
 
 interface SettingsPanelProps {
   initial: Config;
@@ -41,6 +42,16 @@ export function SettingsPanel({
     }
   };
 
+  const resyncFromBackend = useCallback(async () => {
+    try {
+      const fresh = await invoke<Config>("get_config");
+      setDraft(fresh);
+      onSaved(fresh);
+    } catch (e) {
+      console.error("get_config failed:", e);
+    }
+  }, [onSaved]);
+
   const patch = <K extends keyof Config>(key: K, value: Config[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
@@ -75,16 +86,6 @@ export function SettingsPanel({
                 <option value="countdown">Countdown</option>
               </select>
             </Field>
-            <Field label="Countdown default (minutes)">
-              <NumberInput
-                value={draft.core.countdown_default_min}
-                onChange={(v) =>
-                  patch("core", { ...draft.core, countdown_default_min: v })
-                }
-                min={1}
-                max={600}
-              />
-            </Field>
           </Section>
 
           <Section title="Appearance">
@@ -116,66 +117,6 @@ export function SettingsPanel({
                   ...draft.appearance,
                   sidebar_visible: v,
                 })
-              }
-            />
-          </Section>
-
-          <Section title="Pomodoro">
-            <Field label="Focus (minutes)">
-              <NumberInput
-                value={draft.pomodoro.focus_min}
-                onChange={(v) =>
-                  patch("pomodoro", { ...draft.pomodoro, focus_min: v })
-                }
-                min={1}
-                max={180}
-              />
-            </Field>
-            <Field label="Break (minutes)">
-              <NumberInput
-                value={draft.pomodoro.break_min}
-                onChange={(v) =>
-                  patch("pomodoro", { ...draft.pomodoro, break_min: v })
-                }
-                min={1}
-                max={60}
-              />
-            </Field>
-            <Field label="Long break (minutes)">
-              <NumberInput
-                value={draft.pomodoro.long_break_min}
-                onChange={(v) =>
-                  patch("pomodoro", { ...draft.pomodoro, long_break_min: v })
-                }
-                min={1}
-                max={120}
-              />
-            </Field>
-            <Field label="Cycles before long break">
-              <NumberInput
-                value={draft.pomodoro.cycles_before_long}
-                onChange={(v) =>
-                  patch("pomodoro", {
-                    ...draft.pomodoro,
-                    cycles_before_long: v,
-                  })
-                }
-                min={1}
-                max={12}
-              />
-            </Field>
-            <Toggle
-              label="Auto-start breaks"
-              value={draft.pomodoro.auto_start_breaks}
-              onChange={(v) =>
-                patch("pomodoro", { ...draft.pomodoro, auto_start_breaks: v })
-              }
-            />
-            <Toggle
-              label="Auto-start focus after break"
-              value={draft.pomodoro.auto_start_focus}
-              onChange={(v) =>
-                patch("pomodoro", { ...draft.pomodoro, auto_start_focus: v })
               }
             />
           </Section>
@@ -250,6 +191,8 @@ export function SettingsPanel({
             </p>
           </Section>
 
+          <PluginSettingsSection onConfigPersisted={resyncFromBackend} />
+
           <Section title="Data">
             <ReadOnlyRow label="Data directory" value={flintDir} mono />
             <p className="text-[11px] text-[var(--text-muted)]">
@@ -322,30 +265,6 @@ function Field({
       <label className="text-xs text-[var(--text-secondary)]">{label}</label>
       <div>{children}</div>
     </div>
-  );
-}
-
-function NumberInput({
-  value,
-  onChange,
-  min,
-  max,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  min?: number;
-  max?: number;
-}) {
-  return (
-    <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      data-flint-input="true"
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="w-24 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
-    />
   );
 }
 

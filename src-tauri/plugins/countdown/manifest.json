@@ -1,0 +1,21 @@
+{
+  "id": "countdown",
+  "name": "Countdown",
+  "version": "1.0.0",
+  "description": "Count down from a configurable duration and stop on completion.",
+  "author": "Flint",
+  "type": "default",
+  "entry": "index.js",
+  "ui_slots": ["settings"],
+  "events": ["session:start", "interval:end"],
+  "config_section": "core",
+  "config_schema": {
+    "countdown_default_min": {
+      "type": "number",
+      "default": 60,
+      "label": "Countdown duration (min)",
+      "min": 1,
+      "max": 600
+    }
+  }
+}
