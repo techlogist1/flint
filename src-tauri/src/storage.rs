@@ -19,6 +19,36 @@ pub fn recovery_path() -> Result<PathBuf, String> {
     Ok(flint_dir()?.join("recovery.json"))
 }
 
+pub fn state_path() -> Result<PathBuf, String> {
+    Ok(flint_dir()?.join("state.json"))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppState {
+    pub first_close_toast_shown: bool,
+    pub hint_dismissed: bool,
+}
+
+pub fn load_app_state() -> AppState {
+    let Ok(path) = state_path() else {
+        return AppState::default();
+    };
+    if !path.exists() {
+        return AppState::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => AppState::default(),
+    }
+}
+
+pub fn save_app_state(state: &AppState) -> Result<(), String> {
+    let path = state_path()?;
+    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RecoveryFile {
     pub session_id: String,

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTimer } from "./hooks/use-timer";
 import { Sidebar } from "./components/sidebar";
 import { TimerDisplay } from "./components/timer-display";
@@ -8,6 +9,7 @@ import { StatusBar } from "./components/status-bar";
 import { PluginHost } from "./components/plugin-host";
 import { Notifications } from "./components/notifications";
 import { SessionDetailPanel } from "./components/session-detail";
+import { TrayToast } from "./components/tray-toast";
 import type { Config, Mode } from "./lib/types";
 import { MODES } from "./lib/types";
 
@@ -26,6 +28,7 @@ function AppShell() {
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [hintDismissed, setHintDismissed] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [trayToast, setTrayToast] = useState<string | null>(null);
 
   const openSession = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -67,6 +70,73 @@ function AppShell() {
       setHintDismissed(true);
     }
   }, [state?.status]);
+
+  // Tray-originated events: first-close toast, quick-start from menu
+  useEffect(() => {
+    const unlisteners: Promise<UnlistenFn>[] = [];
+    unlisteners.push(
+      listen<{ message: string }>("tray:first-close", async (evt) => {
+        const msg =
+          evt.payload?.message ??
+          "Flint minimized to tray. Right-click the tray icon → Quit to exit.";
+        setTrayToast(msg);
+        window.setTimeout(async () => {
+          try {
+            await invoke("mark_first_close_shown");
+          } catch (e) {
+            console.error("mark_first_close_shown failed", e);
+          }
+          try {
+            await invoke("hide_main_window");
+          } catch (e) {
+            console.error("hide_main_window failed", e);
+          }
+          setTrayToast(null);
+        }, 3500);
+      }),
+    );
+    unlisteners.push(
+      listen<{ mode: string }>("tray:start-session", async (evt) => {
+        const mode = evt.payload?.mode;
+        if (mode && (MODES as string[]).includes(mode)) {
+          setSelectedMode(mode as Mode);
+          try {
+            await invoke("start_session", { mode, tags: stagedTags });
+          } catch (e) {
+            console.error("start_session from tray failed", e);
+          }
+        }
+      }),
+    );
+    return () => {
+      unlisteners.forEach((p) => p.then((fn) => fn()).catch(() => {}));
+    };
+  }, [stagedTags]);
+
+  // Auto-show/hide overlay based on session state + config preference
+  useEffect(() => {
+    if (!config) return;
+    if (!config.overlay.enabled) return;
+    if (config.overlay.always_visible) return;
+    const unlisteners: Promise<UnlistenFn>[] = [];
+    unlisteners.push(
+      listen("session:start", () => {
+        invoke("overlay_show").catch((e) =>
+          console.error("overlay_show failed", e),
+        );
+      }),
+    );
+    const hideOnEnd = () => {
+      invoke("overlay_hide").catch((e) =>
+        console.error("overlay_hide failed", e),
+      );
+    };
+    unlisteners.push(listen("session:complete", hideOnEnd));
+    unlisteners.push(listen("session:cancel", hideOnEnd));
+    return () => {
+      unlisteners.forEach((p) => p.then((fn) => fn()).catch(() => {}));
+    };
+  }, [config]);
 
   const startSession = useCallback(async () => {
     try {
@@ -121,6 +191,20 @@ function AppShell() {
         if (!e.shiftKey && k === "b") {
           e.preventDefault();
           setSidebarVisible((v) => !v);
+          return;
+        }
+        if (e.shiftKey && k === "o") {
+          e.preventDefault();
+          invoke("overlay_toggle").catch((err) =>
+            console.error("overlay_toggle failed", err),
+          );
+          return;
+        }
+        if (!e.shiftKey && k === "q") {
+          e.preventDefault();
+          invoke("quit_app").catch((err) =>
+            console.error("quit_app failed", err),
+          );
           return;
         }
         if (!e.shiftKey && k === "t") {
@@ -287,6 +371,7 @@ function AppShell() {
           />
         )}
       </main>
+      {trayToast && <TrayToast message={trayToast} />}
     </div>
   );
 }

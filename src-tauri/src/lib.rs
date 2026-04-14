@@ -1,16 +1,18 @@
 mod cache;
 mod commands;
 mod config;
+mod overlay;
 mod plugins;
 mod storage;
 mod timer;
+mod tray;
 
 use std::sync::Mutex;
 use std::time::Duration;
 
 use cache::CacheState;
-use commands::{ConfigState, EngineState, PluginRegistry};
-use tauri::{AppHandle, Emitter, Manager};
+use commands::{AppStateStore, ConfigState, EngineState, PluginRegistry};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use timer::{TimerState, TimerStatus};
 
 fn tick_once(app: &AppHandle) {
@@ -71,6 +73,9 @@ fn tick_once(app: &AppHandle) {
             eprintln!("[flint] recovery write failed: {}", e);
         }
     }
+
+    drop(state);
+    tray::update_tooltip(app);
 }
 
 fn build_initial_state() -> (TimerState, bool) {
@@ -154,12 +159,68 @@ pub fn run() {
         Err(e) => eprintln!("[flint] cache init failed: {}", e),
     }
 
+    let app_state = storage::load_app_state();
+    let has_active_session = initial_state.status != TimerStatus::Idle;
+    let overlay_always_visible = cfg.overlay.always_visible;
+    let overlay_enabled = cfg.overlay.enabled;
+
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
         .manage(ConfigState(Mutex::new(cfg)))
         .manage(PluginRegistry(Mutex::new(loaded_plugins)))
         .manage(cache_state)
-        .setup(|app| {
+        .manage(AppStateStore(Mutex::new(app_state)))
+        .setup(move |app| {
+            if let Err(e) = tray::setup(app.handle()) {
+                eprintln!("[flint] tray setup failed: {}", e);
+            }
+
+            if overlay_enabled {
+                if let Err(e) = overlay::build_overlay(app.handle()) {
+                    eprintln!("[flint] overlay build failed: {}", e);
+                } else if has_active_session || overlay_always_visible {
+                    let _ = overlay::overlay_show(app.handle().clone());
+                }
+            }
+
+            if let Some(main) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        let cfg_state = app_handle.state::<ConfigState>();
+                        let close_to_tray = cfg_state
+                            .0
+                            .lock()
+                            .map(|c| c.tray.close_to_tray)
+                            .unwrap_or(true);
+                        if !close_to_tray {
+                            return;
+                        }
+                        api.prevent_close();
+
+                        let store = app_handle.state::<AppStateStore>();
+                        let toast_pending = store
+                            .0
+                            .lock()
+                            .map(|s| !s.first_close_toast_shown)
+                            .unwrap_or(false);
+
+                        if toast_pending {
+                            let _ = app_handle.emit(
+                                "tray:first-close",
+                                serde_json::json!({
+                                    "message": "Flint minimized to tray. Right-click the tray icon → Quit to exit."
+                                }),
+                            );
+                        } else if let Some(window) =
+                            app_handle.get_webview_window("main")
+                        {
+                            let _ = window.hide();
+                        }
+                    }
+                });
+            }
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -198,6 +259,17 @@ pub fn run() {
             commands::stats_range,
             commands::stats_heatmap,
             commands::rebuild_cache,
+            commands::get_app_state,
+            commands::mark_first_close_shown,
+            commands::hide_main_window,
+            commands::show_main_window,
+            commands::quit_app,
+            overlay::overlay_show,
+            overlay::overlay_hide,
+            overlay::overlay_toggle,
+            overlay::overlay_set_expanded,
+            overlay::overlay_save_position,
+            overlay::overlay_move_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

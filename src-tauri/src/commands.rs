@@ -3,7 +3,7 @@ use crate::cache::{
 };
 use crate::config::{self, Config};
 use crate::plugins::{LoadedPlugin, PluginDescriptor};
-use crate::storage;
+use crate::storage::{self, AppState};
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::Utc;
 use rand::Rng;
@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub struct EngineState(pub Mutex<TimerState>);
 pub struct ConfigState(pub Mutex<Config>);
 pub struct PluginRegistry(pub Mutex<Vec<LoadedPlugin>>);
+pub struct AppStateStore(pub Mutex<AppState>);
 
 fn generate_id() -> String {
     let n: u32 = rand::thread_rng().gen();
@@ -649,6 +650,45 @@ pub fn rebuild_cache(cache_state: State<'_, CacheState>) -> Result<i64, String> 
     cache::rebuild(conn)?;
     conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_app_state(state: State<'_, AppStateStore>) -> Result<AppState, String> {
+    let s = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(s.clone())
+}
+
+#[tauri::command]
+pub fn mark_first_close_shown(state: State<'_, AppStateStore>) -> Result<(), String> {
+    let mut s = state.0.lock().map_err(|e| e.to_string())?;
+    if s.first_close_toast_shown {
+        return Ok(());
+    }
+    s.first_close_toast_shown = true;
+    storage::save_app_state(&s)
+}
+
+#[tauri::command]
+pub fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.unminimize().map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[cfg(test)]

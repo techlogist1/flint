@@ -44,6 +44,15 @@ body {
   -webkit-user-select: none;
 }
 
+body.flint-overlay-body {
+  background-color: transparent;
+}
+
+body.flint-overlay-body,
+body.flint-overlay-body #root {
+  background-color: transparent;
+}
+
 ::selection {
   background-color: var(--accent-subtle);
   color: var(--text-primary);
@@ -57,5 +66,16 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes flint-overlay-expand {
+  from {
+    opacity: 0.6;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }

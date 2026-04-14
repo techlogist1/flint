@@ -33,6 +33,9 @@ export interface Config {
     enabled: boolean;
     position: string;
     opacity: number;
+    x?: number | null;
+    y?: number | null;
+    always_visible: boolean;
   };
   keybindings: {
     toggle_sidebar: string;

@@ -129,7 +129,14 @@ export function SettingsPanel({
                 patch("overlay", { ...draft.overlay, enabled: v })
               }
             />
-            <Field label="Position">
+            <Toggle
+              label="Always visible"
+              value={draft.overlay.always_visible}
+              onChange={(v) =>
+                patch("overlay", { ...draft.overlay, always_visible: v })
+              }
+            />
+            <Field label="Default position">
               <select
                 value={draft.overlay.position}
                 onChange={(e) =>
@@ -167,6 +174,27 @@ export function SettingsPanel({
                 </span>
               </div>
             </Field>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Drag the overlay pill to reposition it. The new position is saved
+              automatically.
+            </p>
+          </Section>
+
+          <Section title="System tray">
+            <Toggle
+              label="Close to tray"
+              value={draft.tray.close_to_tray}
+              onChange={(v) =>
+                patch("tray", { ...draft.tray, close_to_tray: v })
+              }
+            />
+            <Toggle
+              label="Show timer in tooltip"
+              value={draft.tray.show_timer_in_tray}
+              onChange={(v) =>
+                patch("tray", { ...draft.tray, show_timer_in_tray: v })
+              }
+            />
           </Section>
 
           <Section title="Keybindings">

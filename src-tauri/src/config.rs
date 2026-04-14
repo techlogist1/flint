@@ -53,6 +53,11 @@ pub struct Overlay {
     pub enabled: bool,
     pub position: String,
     pub opacity: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    pub always_visible: bool,
 }
 
 impl Default for Overlay {
@@ -61,6 +66,9 @@ impl Default for Overlay {
             enabled: true,
             position: "top-right".into(),
             opacity: 0.95,
+            x: None,
+            y: None,
+            always_visible: false,
         }
     }
 }
