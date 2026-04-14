@@ -8,5 +8,6 @@
   "entry": "index.js",
   "ui_slots": [],
   "events": ["session:start"],
+  "timer_mode": true,
   "config_schema": {}
 }

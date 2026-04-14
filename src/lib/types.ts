@@ -1,5 +1,14 @@
 export type TimerStatus = "idle" | "running" | "paused";
-export type Mode = "pomodoro" | "stopwatch" | "countdown";
+// A mode is just a plugin id — the set of valid modes is whatever
+// timer-mode plugins are currently enabled. Treating it as `string` means
+// adding a community plugin with a new mode does not require any core
+// refactor.
+export type Mode = string;
+
+export interface TimerModeInfo {
+  id: string;
+  label: string;
+}
 
 export interface Interval {
   type: string;
@@ -59,13 +68,22 @@ export interface Config {
   };
 }
 
-export const MODES: Mode[] = ["pomodoro", "stopwatch", "countdown"];
-
-export const MODE_LABELS: Record<Mode, string> = {
-  pomodoro: "Pomodoro",
-  stopwatch: "Stopwatch",
-  countdown: "Countdown",
-};
+/**
+ * Best-effort label for a mode id when the plugin registry is not available
+ * (e.g. inside the separate overlay window which has no PluginHost). Known
+ * built-in modes have canonical labels; everything else falls back to a
+ * title-cased version of the raw id.
+ */
+export function fallbackModeLabel(mode: string): string {
+  if (!mode) return "";
+  const builtIn: Record<string, string> = {
+    pomodoro: "Pomodoro",
+    stopwatch: "Stopwatch",
+    countdown: "Countdown",
+  };
+  if (builtIn[mode]) return builtIn[mode];
+  return mode.charAt(0).toUpperCase() + mode.slice(1);
+}
 
 export interface CachedSession {
   id: string;

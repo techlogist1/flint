@@ -160,7 +160,7 @@ function SessionRow({
   return (
     <button
       onClick={onClick}
-      className={`flex w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors duration-150 ease-out ${
+      className={`flex w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors duration-100 ease-out ${
         active
           ? "border border-[var(--accent)] bg-[var(--accent-subtle)]"
           : "border border-transparent hover:bg-[var(--bg-elevated)]"

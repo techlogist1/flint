@@ -386,11 +386,18 @@ pub fn set_plugin_enabled(
     plugin_id: String,
     enabled: bool,
     config: State<'_, ConfigState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
     cfg.plugins.enabled.insert(plugin_id, enabled);
     let dir = storage::flint_dir()?;
     config::save(&dir, &cfg)?;
+    drop(cfg);
+    // Rebuild the tray menu so any newly enabled/disabled timer-mode plugin
+    // shows up (or disappears) in the right-click menu without a restart.
+    if let Err(e) = crate::tray::rebuild_menu(&app) {
+        eprintln!("[flint] tray rebuild after plugin toggle failed: {}", e);
+    }
     Ok(())
 }
 

@@ -21,6 +21,12 @@ export interface PluginManifest {
   events: string[];
   config_section?: string | null;
   config_schema: Record<string, ConfigSchemaField>;
+  /**
+   * If true, this plugin registers itself as a selectable timer mode —
+   * appearing in the tray menu, Ctrl+N shortcuts, and the default-mode
+   * dropdown. Community plugins can add new modes by setting this.
+   */
+  timer_mode?: boolean;
 }
 
 export interface PluginDescriptor {

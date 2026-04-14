@@ -6,17 +6,17 @@ import { Sidebar } from "./components/sidebar";
 import { TimerDisplay } from "./components/timer-display";
 import { SettingsPanel } from "./components/settings-panel";
 import { StatusBar } from "./components/status-bar";
-import { PluginHost } from "./components/plugin-host";
+import { PluginHost, useTimerModes } from "./components/plugin-host";
 import { Notifications } from "./components/notifications";
 import { SessionDetailPanel } from "./components/session-detail";
 import { TrayToast } from "./components/tray-toast";
-import type { Config, Mode } from "./lib/types";
-import { MODES } from "./lib/types";
+import type { Config, Mode, TimerModeInfo } from "./lib/types";
 
 type View = "timer" | "settings" | "session-detail";
 
 function AppShell() {
   const { state, intervalRemaining } = useTimer();
+  const timerModes = useTimerModes();
   const [config, setConfig] = useState<Config | null>(null);
   const [flintDir, setFlintDir] = useState<string>("");
 
@@ -42,7 +42,14 @@ function AppShell() {
   stagedTagsRef.current = stagedTags;
   const configRef = useRef(config);
   configRef.current = config;
+  const timerModesRef = useRef<TimerModeInfo[]>(timerModes);
+  timerModesRef.current = timerModes;
   const sidebarSaveTimerRef = useRef<number | null>(null);
+
+  const hasTimerMode = useCallback(
+    (id: string) => timerModes.some((m) => m.id === id),
+    [timerModes],
+  );
 
   const openSession = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -63,8 +70,8 @@ function AppShell() {
         const cfg = await invoke<Config>("get_config");
         setConfig(cfg);
         setSidebarVisible(cfg.appearance.sidebar_visible);
-        if (MODES.includes(cfg.core.default_mode as Mode)) {
-          setSelectedMode(cfg.core.default_mode as Mode);
+        if (cfg.core.default_mode) {
+          setSelectedMode(cfg.core.default_mode);
         }
       } catch (e) {
         console.error("get_config failed", e);
@@ -77,6 +84,16 @@ function AppShell() {
       }
     })();
   }, []);
+
+  // Once plugins have loaded, make sure the selected mode still points to an
+  // enabled timer-mode plugin. If the user disabled the plugin that was their
+  // last-used mode, snap to the first available one.
+  useEffect(() => {
+    if (timerModes.length === 0) return;
+    if (!timerModes.some((m) => m.id === selectedMode)) {
+      setSelectedMode(timerModes[0].id);
+    }
+  }, [timerModes, selectedMode]);
 
   // If an active session exists (e.g. after recovery), stop showing the hint
   useEffect(() => {
@@ -112,8 +129,9 @@ function AppShell() {
     unlisteners.push(
       listen<{ mode: string }>("tray:start-session", async (evt) => {
         const mode = evt.payload?.mode;
-        if (mode && (MODES as string[]).includes(mode)) {
-          setSelectedMode(mode as Mode);
+        const enabled = timerModesRef.current.some((m) => m.id === mode);
+        if (mode && enabled) {
+          setSelectedMode(mode);
           try {
             await invoke("start_session", { mode, tags: stagedTags });
           } catch (e) {
@@ -260,10 +278,14 @@ function AppShell() {
           setStopConfirmOpen(false);
           return;
         }
-        if (!e.shiftKey && (k === "1" || k === "2" || k === "3")) {
+        if (!e.shiftKey && k.length === 1 && k >= "1" && k <= "9") {
           if (currentState?.status === "idle" && view === "timer") {
-            e.preventDefault();
-            setSelectedMode(MODES[Number(k) - 1]);
+            const index = Number(k) - 1;
+            const modes = timerModesRef.current;
+            if (index < modes.length) {
+              e.preventDefault();
+              setSelectedMode(modes[index].id);
+            }
           }
           return;
         }
@@ -367,7 +389,10 @@ function AppShell() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         {view === "timer" && (
-          <>
+          <div
+            key="view-timer"
+            className="flex min-h-0 flex-1 flex-col animate-[flint-crossfade_150ms_ease-out]"
+          >
             <div className="flex min-h-0 flex-1 flex-col">
               <TopBar
                 sidebarVisible={sidebarVisible}
@@ -384,31 +409,39 @@ function AppShell() {
                 hintDismissed={hintDismissed}
                 onTagConfirm={onTagConfirm}
                 onTagCancel={() => setTagInputOpen(false)}
-                onStopConfirm={confirmStop}
-                onStopCancel={() => setStopConfirmOpen(false)}
               />
             </div>
             <StatusBar state={state} selectedMode={selectedMode} />
-          </>
+          </div>
         )}
         {view === "settings" && config && (
-          <SettingsPanel
-            initial={config}
-            flintDir={flintDir}
-            onClose={() => setView("timer")}
-            onSaved={(cfg) => {
-              setConfig(cfg);
-              if (MODES.includes(cfg.core.default_mode as Mode)) {
-                setSelectedMode(cfg.core.default_mode as Mode);
-              }
-            }}
-          />
+          <div
+            key="view-settings"
+            className="flex min-h-0 flex-1 flex-col animate-[flint-fadein_150ms_ease-out]"
+          >
+            <SettingsPanel
+              initial={config}
+              flintDir={flintDir}
+              onClose={() => setView("timer")}
+              onSaved={(cfg) => {
+                setConfig(cfg);
+                if (cfg.core.default_mode && hasTimerMode(cfg.core.default_mode)) {
+                  setSelectedMode(cfg.core.default_mode);
+                }
+              }}
+            />
+          </div>
         )}
         {view === "session-detail" && activeSessionId && (
-          <SessionDetailPanel
-            sessionId={activeSessionId}
-            onClose={closeSessionDetail}
-          />
+          <div
+            key="view-session-detail"
+            className="flex min-h-0 flex-1 flex-col animate-[flint-crossfade_150ms_ease-out]"
+          >
+            <SessionDetailPanel
+              sessionId={activeSessionId}
+              onClose={closeSessionDetail}
+            />
+          </div>
         )}
       </main>
       {trayToast && <TrayToast message={trayToast} />}

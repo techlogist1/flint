@@ -97,14 +97,20 @@ export function Sidebar({
     });
   }, [tabs]);
 
-  if (!visible) return null;
-
   const active = tabs.find((t) => t.id === activeTab) ?? null;
 
   return (
     <aside
-      className="relative flex h-full shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)]"
-      style={{ width: displayWidth }}
+      aria-hidden={!visible}
+      className="relative flex h-full shrink-0 flex-col overflow-hidden bg-[var(--bg-secondary)]"
+      style={{
+        width: visible ? displayWidth : 0,
+        borderRightWidth: visible ? 1 : 0,
+        borderRightStyle: "solid",
+        borderRightColor: "var(--border)",
+        transition:
+          "width 200ms ease-out, border-right-width 200ms ease-out",
+      }}
     >
       <div className="flex items-center gap-1 border-b border-[var(--border)] px-2 py-2">
         {tabs.length === 0 ? (
@@ -154,13 +160,15 @@ export function Sidebar({
       {/* D-H4: 4px invisible hit target on the right edge for edge-drag
           resize. Sits above content (z-10) so it catches pointer events
           even when overlapping scrollable regions. */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={onHandlePointerDown}
-        className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize"
-        title="Drag to resize"
-      />
+      {visible && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={onHandlePointerDown}
+          className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize"
+          title="Drag to resize"
+        />
+      )}
     </aside>
   );
 }

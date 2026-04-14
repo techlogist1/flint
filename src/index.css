@@ -58,6 +58,61 @@ body.flint-overlay-body #root {
   color: var(--text-primary);
 }
 
+/* Custom scrollbars — thin, dark, subtle hover.
+   Applies everywhere except the overlay window, which does not scroll. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-elevated);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-elevated) transparent;
+}
+
+/* Native <select> — strip the browser chrome and draw our own caret.
+   Applied via the .flint-select class so plugin-authored <select>s render
+   with the same look when they opt in. */
+select,
+.flint-select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-color: var(--bg-elevated);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+select:focus,
+.flint-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+select option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
 @keyframes flint-toast {
   from {
     opacity: 0;
@@ -69,14 +124,36 @@ body.flint-overlay-body #root {
   }
 }
 
-@keyframes flint-overlay-expand {
+/* Toast bar that slides up from the bottom of the timer area. */
+@keyframes flint-slideup {
   from {
-    opacity: 0.6;
-    transform: scale(0.98);
+    opacity: 0;
+    transform: translateY(100%);
   }
   to {
     opacity: 1;
-    transform: scale(1);
+    transform: translateY(0);
+  }
+}
+
+/* Overlay content fade-in — 100ms delay so the window resize completes
+   before the expanded layout renders. */
+@keyframes flint-fadein {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* View crossfade for main-area tab switches. */
+@keyframes flint-crossfade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

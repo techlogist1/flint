@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Config } from "../lib/types";
+import { useTimerModes } from "./plugin-host";
 import { PluginSettingsSection } from "./plugin-settings";
 
 interface SettingsPanelProps {
@@ -16,6 +17,7 @@ export function SettingsPanel({
   onClose,
   onSaved,
 }: SettingsPanelProps) {
+  const timerModes = useTimerModes();
   const [draft, setDraft] = useState<Config>(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,11 +81,18 @@ export function SettingsPanel({
                 onChange={(e) =>
                   patch("core", { ...draft.core, default_mode: e.target.value })
                 }
-                className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
+                className="px-2 py-1 text-xs"
               >
-                <option value="pomodoro">Pomodoro</option>
-                <option value="stopwatch">Stopwatch</option>
-                <option value="countdown">Countdown</option>
+                {timerModes.length === 0 && (
+                  <option value={draft.core.default_mode}>
+                    (no timer mode plugins enabled)
+                  </option>
+                )}
+                {timerModes.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
               </select>
             </Field>
           </Section>
@@ -328,7 +337,6 @@ function Toggle({
 function ReadOnlyRow({
   label,
   value,
-  mono,
   fixed,
 }: {
   label: string;
@@ -340,11 +348,7 @@ function ReadOnlyRow({
     <div className="grid grid-cols-[200px_1fr] items-center gap-4">
       <label className="text-xs text-[var(--text-secondary)]">{label}</label>
       <div className="flex items-center gap-2">
-        <span
-          className={`rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 text-xs text-[var(--text-primary)] ${
-            mono ? "font-mono" : "font-mono"
-          }`}
-        >
+        <span className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-xs text-[var(--text-primary)]">
           {value}
         </span>
         {fixed && (

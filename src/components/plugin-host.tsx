@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -14,6 +15,7 @@ import {
 } from "../lib/plugin-api";
 import { runInSandbox } from "../lib/plugin-sandbox";
 import type { PluginDescriptor } from "../lib/plugins";
+import type { TimerModeInfo } from "../lib/types";
 
 interface PluginNotification {
   id: string;
@@ -34,6 +36,9 @@ interface PluginContextValue {
   slots: Record<string, SlotEntry[]>;
   notifications: PluginNotification[];
   dismissNotification: (id: string) => void;
+  /** Enabled timer-mode plugins in registration order. Drives Ctrl+N, the
+   *  default-mode dropdown, and every other UI surface that lists modes. */
+  timerModes: TimerModeInfo[];
 }
 
 const PluginContext = createContext<PluginContextValue | null>(null);
@@ -42,6 +47,16 @@ export function usePlugins(): PluginContextValue {
   const ctx = useContext(PluginContext);
   if (!ctx) throw new Error("usePlugins must be used inside PluginHost");
   return ctx;
+}
+
+/**
+ * Read the dynamic list of enabled timer-mode plugins. Used by any surface
+ * that needs to enumerate modes (keyboard shortcuts, tray, settings
+ * dropdown, idle placeholder) so nothing has to hardcode pomodoro / stopwatch
+ * / countdown.
+ */
+export function useTimerModes(): TimerModeInfo[] {
+  return usePlugins().timerModes;
 }
 
 export function PluginHost({ children }: { children: React.ReactNode }) {
@@ -216,6 +231,14 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const timerModes = useMemo<TimerModeInfo[]>(
+    () =>
+      plugins
+        .filter((p) => p.enabled && p.manifest.timer_mode === true)
+        .map((p) => ({ id: p.manifest.id, label: p.manifest.name })),
+    [plugins],
+  );
+
   return (
     <PluginContext.Provider
       value={{
@@ -226,6 +249,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         slots,
         notifications,
         dismissNotification,
+        timerModes,
       }}
     >
       {children}

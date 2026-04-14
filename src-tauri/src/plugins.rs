@@ -36,6 +36,12 @@ pub struct PluginManifest {
     pub config_section: Option<String>,
     #[serde(default)]
     pub config_schema: HashMap<String, ConfigSchemaField>,
+    /// If true, this plugin registers itself as a selectable timer mode.
+    /// Controls tray menu entries, Ctrl+N shortcuts, and the default-mode
+    /// dropdown so that any community plugin can add a new timer mode by
+    /// setting this flag — no core code changes required.
+    #[serde(default)]
+    pub timer_mode: bool,
 }
 
 fn default_type() -> String {
@@ -210,6 +216,33 @@ pub fn load_all(community_dir: &Path) -> Vec<LoadedPlugin> {
     all
 }
 
+/// Lightweight record of an enabled timer mode — used by tray, Ctrl+N, and
+/// the settings dropdown so none of those places have to reason about plugin
+/// manifests or config plumbing.
+#[derive(Debug, Clone, Serialize)]
+pub struct TimerModeInfo {
+    pub id: String,
+    pub label: String,
+}
+
+/// Walk the loaded plugin list and return the enabled timer-mode plugins in
+/// registration order. An "enabled" plugin is one the config explicitly turns
+/// on, or a built-in plugin with no explicit override.
+pub fn enabled_timer_modes(
+    plugins: &[LoadedPlugin],
+    enabled: &HashMap<String, bool>,
+) -> Vec<TimerModeInfo> {
+    plugins
+        .iter()
+        .filter(|p| p.manifest.timer_mode)
+        .filter(|p| enabled.get(&p.manifest.id).copied().unwrap_or(p.builtin))
+        .map(|p| TimerModeInfo {
+            id: p.manifest.id.clone(),
+            label: p.manifest.name.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +324,63 @@ mod tests {
             .find(|p| p.manifest.id == "stopwatch")
             .expect("stopwatch missing");
         assert!(s.manifest.config_schema.is_empty());
+    }
+
+    // A community plugin adding a new timer mode must be surfaced by
+    // `enabled_timer_modes` without any core-side edits. This test stands in
+    // for that scenario by running the helper directly against the bundled
+    // set and verifying every builtin mode plugin is present.
+    #[test]
+    fn enabled_timer_modes_contains_all_builtin_modes() {
+        let loaded = load_builtins();
+        let enabled: HashMap<String, bool> = HashMap::new();
+        let modes = enabled_timer_modes(&loaded, &enabled);
+        let ids: Vec<&str> = modes.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"pomodoro"));
+        assert!(ids.contains(&"stopwatch"));
+        assert!(ids.contains(&"countdown"));
+        // Non-mode plugins must NOT leak into the mode list.
+        assert!(!ids.contains(&"session-log"));
+        assert!(!ids.contains(&"stats"));
+    }
+
+    #[test]
+    fn enabled_timer_modes_respects_disabled_override() {
+        let loaded = load_builtins();
+        let mut enabled = HashMap::new();
+        enabled.insert("pomodoro".to_string(), false);
+        let modes = enabled_timer_modes(&loaded, &enabled);
+        let ids: Vec<&str> = modes.iter().map(|m| m.id.as_str()).collect();
+        assert!(!ids.contains(&"pomodoro"));
+        assert!(ids.contains(&"stopwatch"));
+        assert!(ids.contains(&"countdown"));
+    }
+
+    #[test]
+    fn builtin_timer_mode_plugins_declare_timer_mode_flag() {
+        let loaded = load_builtins();
+        for id in ["pomodoro", "stopwatch", "countdown"] {
+            let plugin = loaded
+                .iter()
+                .find(|p| p.manifest.id == id)
+                .unwrap_or_else(|| panic!("{} missing", id));
+            assert!(
+                plugin.manifest.timer_mode,
+                "{} must set timer_mode:true so the tray and keyboard pick it up",
+                id
+            );
+        }
+        // session-log / stats are plugins but NOT timer modes.
+        for id in ["session-log", "stats"] {
+            let plugin = loaded
+                .iter()
+                .find(|p| p.manifest.id == id)
+                .unwrap_or_else(|| panic!("{} missing", id));
+            assert!(
+                !plugin.manifest.timer_mode,
+                "{} must not declare timer_mode",
+                id
+            );
+        }
     }
 }

@@ -12,6 +12,7 @@ interface WeekColumn {
 
 const CELL = 11;
 const GAP = 2;
+const LABEL_H = 14;
 
 export function StatsHeatmap({ cells }: StatsHeatmapProps) {
   const { columns, maxFocus, monthLabels } = useMemo(() => build(cells), [cells]);
@@ -22,60 +23,58 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
     );
   }
 
-  const width = columns.length * (CELL + GAP);
-  const height = 7 * (CELL + GAP) + 14;
+  const naturalWidth = Math.max(1, columns.length * (CELL + GAP) - GAP);
+  const naturalHeight = 7 * (CELL + GAP) - GAP + LABEL_H;
 
   return (
     <div className="space-y-1">
-      <div className="overflow-x-auto">
-        <svg
-          width={width}
-          height={height}
-          className="block"
-          role="img"
-          aria-label="Focus time heatmap"
-        >
-          {monthLabels.map((label, idx) => (
-            <text
-              key={idx}
-              x={label.x * (CELL + GAP)}
-              y={10}
-              fontSize={9}
-              fill="#555555"
-              fontFamily="ui-monospace, monospace"
-            >
-              {label.text}
-            </text>
+      <svg
+        viewBox={`0 0 ${naturalWidth} ${naturalHeight}`}
+        preserveAspectRatio="xMinYMin meet"
+        role="img"
+        aria-label="Focus time heatmap"
+        className="block h-auto w-full"
+      >
+        {monthLabels.map((label, idx) => (
+          <text
+            key={idx}
+            x={label.x * (CELL + GAP)}
+            y={10}
+            fontSize={9}
+            fill="#555555"
+            fontFamily="ui-monospace, monospace"
+          >
+            {label.text}
+          </text>
+        ))}
+        <g transform={`translate(0, ${LABEL_H})`}>
+          {columns.map((col, colIdx) => (
+            <g key={colIdx} transform={`translate(${colIdx * (CELL + GAP)}, 0)`}>
+              {col.days.map((day, dayIdx) => (
+                <rect
+                  key={dayIdx}
+                  x={0}
+                  y={dayIdx * (CELL + GAP)}
+                  width={CELL}
+                  height={CELL}
+                  rx={2}
+                  ry={2}
+                  fill={cellColor(day, maxFocus)}
+                >
+                  {day && (
+                    <title>
+                      {day.date}
+                      {day.focus_sec > 0
+                        ? ` · ${formatFocus(day.focus_sec)}`
+                        : " · no focus"}
+                    </title>
+                  )}
+                </rect>
+              ))}
+            </g>
           ))}
-          <g transform="translate(0, 14)">
-            {columns.map((col, colIdx) => (
-              <g key={colIdx} transform={`translate(${colIdx * (CELL + GAP)}, 0)`}>
-                {col.days.map((day, dayIdx) => (
-                  <rect
-                    key={dayIdx}
-                    x={0}
-                    y={dayIdx * (CELL + GAP)}
-                    width={CELL}
-                    height={CELL}
-                    rx={2}
-                    ry={2}
-                    fill={cellColor(day, maxFocus)}
-                  >
-                    {day && (
-                      <title>
-                        {day.date}
-                        {day.focus_sec > 0
-                          ? ` · ${formatFocus(day.focus_sec)}`
-                          : " · no focus"}
-                      </title>
-                    )}
-                  </rect>
-                ))}
-              </g>
-            ))}
-          </g>
-        </svg>
-      </div>
+        </g>
+      </svg>
       <Legend />
     </div>
   );

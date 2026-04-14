@@ -8,6 +8,7 @@
   "entry": "index.js",
   "ui_slots": ["settings"],
   "events": ["session:start", "interval:end", "session:complete"],
+  "timer_mode": true,
   "config_section": "pomodoro",
   "config_schema": {
     "focus_min": {

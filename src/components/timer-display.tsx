@@ -1,6 +1,8 @@
+import { useEffect, useMemo, useState } from "react";
 import type { Mode, TimerStateView, Config } from "../lib/types";
-import { MODE_LABELS } from "../lib/types";
+import { fallbackModeLabel } from "../lib/types";
 import { formatTime, modeDescription } from "../lib/format";
+import { useTimerModes } from "./plugin-host";
 import { TagInput } from "./tag-input";
 
 interface TimerDisplayProps {
@@ -14,8 +16,6 @@ interface TimerDisplayProps {
   hintDismissed: boolean;
   onTagConfirm: (tags: string[]) => void;
   onTagCancel: () => void;
-  onStopConfirm: () => void;
-  onStopCancel: () => void;
 }
 
 export function TimerDisplay({
@@ -29,9 +29,14 @@ export function TimerDisplay({
   hintDismissed,
   onTagConfirm,
   onTagCancel,
-  onStopConfirm,
-  onStopCancel,
 }: TimerDisplayProps) {
+  const timerModes = useTimerModes();
+  const labelFor = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of timerModes) map.set(m.id, m.label);
+    return (id: string) => map.get(id) ?? fallbackModeLabel(id);
+  }, [timerModes]);
+
   if (!state) {
     return (
       <div className="flex flex-1 items-center justify-center text-[var(--text-muted)]">
@@ -61,14 +66,14 @@ export function TimerDisplay({
     : null;
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center px-6">
+    <div className="relative flex flex-1 flex-col items-center justify-center px-6">
       <div className="flex flex-col items-center gap-4">
         <div className="flex items-center gap-3">
           <StatusDot status={state.status} />
           <span className="text-xs uppercase tracking-wider text-[var(--text-secondary)]">
             {isIdle
-              ? MODE_LABELS[displayMode]
-              : `${MODE_LABELS[displayMode]}${
+              ? labelFor(displayMode)
+              : `${labelFor(displayMode)}${
                   intervalLabel ? ` · ${intervalLabel}` : ""
                 }`}
             {isPaused && " · Paused"}
@@ -106,7 +111,6 @@ export function TimerDisplay({
 
         {/* Tags display (idle shows staged, active shows state.tags) */}
         {!tagInputOpen &&
-          !stopConfirmOpen &&
           (isIdle ? stagedTags : state.tags).length > 0 && (
             <div className="flex flex-wrap justify-center gap-1.5">
               {(isIdle ? stagedTags : state.tags).map((t) => (
@@ -121,7 +125,7 @@ export function TimerDisplay({
           )}
 
         {/* Inline tag input */}
-        {tagInputOpen && !stopConfirmOpen && (
+        {tagInputOpen && (
           <TagInput
             initial={isIdle ? stagedTags : state.tags}
             onConfirm={onTagConfirm}
@@ -138,38 +142,62 @@ export function TimerDisplay({
         )}
 
         {/* Running/paused hint */}
-        {!isIdle && !tagInputOpen && !stopConfirmOpen && (
+        {!isIdle && !tagInputOpen && (
           <div className="mt-2 text-xs text-[var(--text-muted)]">
             <Kbd>Space</Kbd> {isRunning ? "pause" : "resume"} ·{" "}
             <Kbd>Enter</Kbd> mark question · <Kbd>Esc</Kbd> stop
           </div>
         )}
+      </div>
 
-        {/* Stop confirm prompt */}
-        {stopConfirmOpen && (
-          <div className="mt-4 flex flex-col items-center gap-2 rounded border border-[var(--danger)] bg-[var(--bg-elevated)] px-5 py-4">
-            <div className="text-sm text-[var(--text-primary)]">
-              End session?
-            </div>
-            <div className="text-xs text-[var(--text-secondary)]">
-              <Kbd>Enter</Kbd> confirm · <Kbd>Esc</Kbd> cancel
-            </div>
-            <div className="mt-1 flex gap-2">
-              <button
-                onClick={onStopConfirm}
-                className="rounded border border-[var(--danger)] bg-[var(--danger)]/10 px-3 py-1 text-xs text-[var(--danger)] transition-colors duration-150 ease-out hover:bg-[var(--danger)]/20"
-              >
-                End
-              </button>
-              <button
-                onClick={onStopCancel}
-                className="rounded border border-[var(--border)] px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:text-[var(--text-primary)]"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
+      <StopConfirmToast open={stopConfirmOpen} />
+    </div>
+  );
+}
+
+function StopConfirmToast({ open }: { open: boolean }) {
+  // Keep the bar mounted for the slide-out animation after `open` flips to
+  // false. `visible` drives the CSS transform; `mounted` controls presence in
+  // the tree.
+  const [mounted, setMounted] = useState(open);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      // Next frame so the transition fires off a translated-down starting
+      // state and the bar slides in.
+      const raf = requestAnimationFrame(() => setVisible(true));
+      return () => cancelAnimationFrame(raf);
+    }
+    if (!mounted) return;
+    setVisible(false);
+    const t = window.setTimeout(() => setMounted(false), 200);
+    return () => window.clearTimeout(t);
+  }, [open, mounted]);
+
+  if (!mounted) return null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-6 pb-3"
+      style={{
+        transform: visible ? "translateY(0)" : "translateY(12px)",
+        opacity: visible ? 1 : 0,
+        transition:
+          "transform 200ms ease-out, opacity 200ms ease-out",
+      }}
+    >
+      <div className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]/85 px-4 py-2 text-xs text-[var(--text-secondary)] backdrop-blur-sm">
+        <span>End session?</span>
+        <span className="text-[var(--text-muted)]">·</span>
+        <Kbd>Enter</Kbd>
+        <span>confirm</span>
+        <span className="text-[var(--text-muted)]">·</span>
+        <Kbd>Esc</Kbd>
+        <span>cancel</span>
       </div>
     </div>
   );
