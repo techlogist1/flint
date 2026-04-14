@@ -44,3 +44,6 @@ Cargo.lock.bak
 
 # Claude Code local session state
 .claude/
+
+# Graphify knowledge graph output
+graphify-out/

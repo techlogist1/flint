@@ -31,6 +31,12 @@ Open-source, local-first, keyboard-driven, plugin-extensible timer for focused w
 - RECOVERY: write recovery.json every 10s and on state change. If recovery.json exists on launch, auto-restore session.
 - PLUGIN ISOLATION: plugins receive a sandboxed API object. They cannot access filesystem directly or modify core state outside the API.
 
+## Knowledge Graph
+- A Graphify knowledge graph exists at graphify-out/
+- Before answering architecture questions, read graphify-out/GRAPH_REPORT.md
+- The graph auto-updates on every git commit via hooks
+- To manually refresh: /graphify . --update
+
 ## Commands
 - Dev: `cargo tauri dev`
 - Build: `cargo tauri build`
