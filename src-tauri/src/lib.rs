@@ -75,18 +75,35 @@ fn build_initial_state() -> (TimerState, bool) {
     let Some(rec) = storage::load_recovery() else {
         return (state, false);
     };
-    state.session_id = Some(rec.session_id);
-    state.started_at = Some(rec.started_at);
-    state.elapsed_sec = rec.elapsed_sec;
-    state.mode = rec.mode;
-    state.status = match rec.status.as_str() {
+
+    let status = match rec.status.as_str() {
         "paused" => TimerStatus::Paused,
         _ => TimerStatus::Running,
     };
+
+    // If the session was running when the app closed, advance the clock by the
+    // wall-clock time that has passed since the recovery file was last updated.
+    // A paused session keeps its stored elapsed_sec exactly.
+    let extra_sec: u64 = if status == TimerStatus::Running {
+        let now = chrono::Utc::now();
+        let since_start = (now - rec.started_at).num_seconds().max(0) as u64;
+        since_start.saturating_sub(rec.elapsed_sec)
+    } else {
+        0
+    };
+
+    state.session_id = Some(rec.session_id);
+    state.started_at = Some(rec.started_at);
+    state.elapsed_sec = rec.elapsed_sec + extra_sec;
+    state.mode = rec.mode;
+    state.status = status;
     state.tags = rec.tags;
     state.questions_done = rec.questions_done;
     state.completed_intervals = rec.intervals;
-    state.current_interval = rec.current_interval;
+    state.current_interval = rec.current_interval.map(|mut ci| {
+        ci.elapsed_sec += extra_sec;
+        ci
+    });
     state.recovery_pending = true;
     (state, true)
 }

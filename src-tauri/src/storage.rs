@@ -55,7 +55,9 @@ pub fn write_recovery(state: &TimerState) -> Result<(), String> {
         plugin_data: serde_json::json!({}),
     };
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    fs::write(recovery_path()?, json).map_err(|e| e.to_string())
+    let path = recovery_path()?;
+    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))?;
+    Ok(())
 }
 
 pub fn delete_recovery() -> Result<(), String> {
@@ -147,4 +149,44 @@ fn slugify(s: &str) -> String {
         })
         .collect();
     raw.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timer::{Interval, TimerState, TimerStatus};
+
+    fn sample_state() -> TimerState {
+        let mut s = TimerState::idle();
+        s.session_id = Some("deadbeef".into());
+        s.started_at = Some(Utc::now());
+        s.status = TimerStatus::Running;
+        s.elapsed_sec = 42;
+        s.mode = "pomodoro".into();
+        s.tags = vec!["physics".into()];
+        s.questions_done = 3;
+        s.current_interval = Some(Interval {
+            interval_type: "focus".into(),
+            start_sec: 0,
+            elapsed_sec: 42,
+            target_sec: Some(1500),
+            ended_emitted: false,
+        });
+        s
+    }
+
+    #[test]
+    fn recovery_roundtrip() {
+        let state = sample_state();
+        write_recovery(&state).expect("write ok");
+        let loaded = load_recovery().expect("load ok");
+        assert_eq!(loaded.session_id, "deadbeef");
+        assert_eq!(loaded.elapsed_sec, 42);
+        assert_eq!(loaded.mode, "pomodoro");
+        assert_eq!(loaded.status, "running");
+        assert_eq!(loaded.questions_done, 3);
+        assert_eq!(loaded.tags, vec!["physics".to_string()]);
+        assert!(loaded.current_interval.is_some());
+        delete_recovery().ok();
+    }
 }
