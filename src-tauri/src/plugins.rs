@@ -139,11 +139,49 @@ pub fn load_community(plugins_dir: &Path) -> Vec<LoadedPlugin> {
             }
         };
         manifest.plugin_type = "community".into();
-        let entry_path = path.join(&manifest.entry);
-        let source = match fs::read_to_string(&entry_path) {
+
+        // S-H1: canonicalize plugin dir and the resolved entry path, and
+        // reject anything that escapes the plugin dir (e.g. `entry:
+        // "../../../Windows/System32/calc.exe"`). Without this, a malicious
+        // manifest could coerce Flint into reading any user-readable text
+        // file on disk.
+        let canonical_dir = match fs::canonicalize(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[flint] canonicalize plugin dir {}: {}",
+                    path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        let raw_entry = path.join(&manifest.entry);
+        let canonical_entry = match fs::canonicalize(&raw_entry) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[flint] canonicalize plugin entry {}: {}",
+                    raw_entry.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        if !canonical_entry.starts_with(&canonical_dir) {
+            eprintln!(
+                "[flint] plugin '{}' entry path escapes plugin dir ({} not under {}) — skipping",
+                manifest.id,
+                canonical_entry.display(),
+                canonical_dir.display()
+            );
+            continue;
+        }
+
+        let source = match fs::read_to_string(&canonical_entry) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[flint] read {}: {}", entry_path.display(), e);
+                eprintln!("[flint] read {}: {}", canonical_entry.display(), e);
                 continue;
             }
         };

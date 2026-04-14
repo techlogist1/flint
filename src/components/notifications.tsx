@@ -8,7 +8,7 @@ export function Notifications() {
       {notifications.map((n) => (
         <div
           key={n.id}
-          className="pointer-events-auto flex min-w-[220px] max-w-sm items-start gap-3 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2.5 text-xs text-[var(--text-primary)] shadow-lg animate-[flint-toast_150ms_ease-out]"
+          className="pointer-events-auto flex min-w-[220px] max-w-sm items-start gap-3 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2.5 text-xs text-[var(--text-primary)] animate-[flint-toast_150ms_ease-out]"
         >
           <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]" />
           <div className="flex-1">

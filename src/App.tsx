@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useTimer } from "./hooks/use-timer";
@@ -29,6 +29,20 @@ function AppShell() {
   const [hintDismissed, setHintDismissed] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [trayToast, setTrayToast] = useState<string | null>(null);
+
+  // Refs that mirror ticking/mutable values, so the global keyboard handler
+  // can read the latest values without re-registering every time `state`
+  // changes. Without this the keydown effect re-registers on every
+  // `session:tick` (B-H1).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const selectedModeRef = useRef(selectedMode);
+  selectedModeRef.current = selectedMode;
+  const stagedTagsRef = useRef(stagedTags);
+  stagedTagsRef.current = stagedTags;
+  const configRef = useRef(config);
+  configRef.current = config;
+  const sidebarSaveTimerRef = useRef<number | null>(null);
 
   const openSession = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -141,29 +155,27 @@ function AppShell() {
   const startSession = useCallback(async () => {
     try {
       await invoke("start_session", {
-        mode: selectedMode,
-        tags: stagedTags,
+        mode: selectedModeRef.current,
+        tags: stagedTagsRef.current,
       });
     } catch (e) {
       console.error("start_session failed", e);
     }
-  }, [selectedMode, stagedTags]);
+  }, []);
 
-  const onTagConfirm = useCallback(
-    async (tags: string[]) => {
-      setTagInputOpen(false);
-      if (state && state.status !== "idle") {
-        try {
-          await invoke("set_tags", { tags });
-        } catch (e) {
-          console.error("set_tags failed", e);
-        }
-      } else {
-        setStagedTags(tags);
+  const onTagConfirm = useCallback(async (tags: string[]) => {
+    setTagInputOpen(false);
+    const current = stateRef.current;
+    if (current && current.status !== "idle") {
+      try {
+        await invoke("set_tags", { tags });
+      } catch (e) {
+        console.error("set_tags failed", e);
       }
-    },
-    [state?.status],
-  );
+    } else {
+      setStagedTags(tags);
+    }
+  }, []);
 
   const confirmStop = useCallback(async () => {
     setStopConfirmOpen(false);
@@ -175,9 +187,38 @@ function AppShell() {
     }
   }, []);
 
-  // Global keyboard handler
+  // D-H4: edge-drag resize. Update config state optimistically so the
+  // sidebar width takes effect immediately, then debounce the backend save.
+  const onSidebarResize = useCallback((newWidth: number) => {
+    setConfig((prev) => {
+      if (!prev) return prev;
+      if (prev.appearance.sidebar_width === newWidth) return prev;
+      return {
+        ...prev,
+        appearance: { ...prev.appearance, sidebar_width: newWidth },
+      };
+    });
+    if (sidebarSaveTimerRef.current != null) {
+      window.clearTimeout(sidebarSaveTimerRef.current);
+    }
+    sidebarSaveTimerRef.current = window.setTimeout(() => {
+      const current = configRef.current;
+      if (current) {
+        invoke<Config>("update_config", { newConfig: current }).catch((e) =>
+          console.error("save sidebar width failed", e),
+        );
+      }
+      sidebarSaveTimerRef.current = null;
+    }, 400);
+  }, []);
+
+  // Global keyboard handler. Reads the ticking `state` via stateRef so the
+  // effect only re-registers when view/stopConfirmOpen/tagInputOpen change
+  // (B-H1). startSession/confirmStop/closeSessionDetail are stable callbacks
+  // so including them in deps is free.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const currentState = stateRef.current;
       const mod = e.metaKey || e.ctrlKey;
       const target = e.target as HTMLElement | null;
       const inInput =
@@ -220,7 +261,7 @@ function AppShell() {
           return;
         }
         if (!e.shiftKey && (k === "1" || k === "2" || k === "3")) {
-          if (state?.status === "idle" && view === "timer") {
+          if (currentState?.status === "idle" && view === "timer") {
             e.preventDefault();
             setSelectedMode(MODES[Number(k) - 1]);
           }
@@ -248,7 +289,7 @@ function AppShell() {
           closeSessionDetail();
           return;
         }
-        if (state && state.status !== "idle") {
+        if (currentState && currentState.status !== "idle") {
           setStopConfirmOpen(true);
           return;
         }
@@ -264,7 +305,7 @@ function AppShell() {
           confirmStop();
           return;
         }
-        if (state && state.status !== "idle") {
+        if (currentState && currentState.status !== "idle") {
           invoke("mark_question").catch((err) =>
             console.error("mark_question failed", err),
           );
@@ -281,14 +322,14 @@ function AppShell() {
         )
           return;
         e.preventDefault();
-        if (!state) return;
-        if (state.status === "idle") {
+        if (!currentState) return;
+        if (currentState.status === "idle") {
           startSession();
-        } else if (state.status === "running") {
+        } else if (currentState.status === "running") {
           invoke("pause_session").catch((err) =>
             console.error("pause_session failed", err),
           );
-        } else if (state.status === "paused") {
+        } else if (currentState.status === "paused") {
           invoke("resume_session").catch((err) =>
             console.error("resume_session failed", err),
           );
@@ -299,9 +340,7 @@ function AppShell() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
-    state,
     view,
-    sidebarVisible,
     stopConfirmOpen,
     tagInputOpen,
     startSession,
@@ -323,6 +362,7 @@ function AppShell() {
           setActiveSessionId(null);
           setStopConfirmOpen(false);
         }}
+        onResize={onSidebarResize}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">

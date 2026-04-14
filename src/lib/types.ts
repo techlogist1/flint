@@ -120,3 +120,10 @@ export interface RangeStats {
   daily: DailyBucket[];
   tags: TagShare[];
 }
+
+export interface LifetimeTotals {
+  longest_session_sec: number;
+  best_day_date: string | null;
+  best_day_focus_sec: number;
+  all_time_focus_sec: number;
+}

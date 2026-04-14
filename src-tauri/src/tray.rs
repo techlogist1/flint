@@ -1,4 +1,4 @@
-use crate::commands::{ConfigState, EngineState};
+use crate::commands::{self, ConfigState, EngineState};
 use crate::overlay;
 use crate::timer::TimerStatus;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -168,5 +168,23 @@ fn format_elapsed(sec: u64) -> String {
 }
 
 pub fn quit_from_tray(app: &AppHandle) {
+    // B-H2: If a session is running/paused when the user picks "Quit Flint"
+    // from the tray, we must finalize it (as cancelled) so the JSON session
+    // file is written to disk and recovery.json is cleaned up. Otherwise the
+    // focus block silently disappears and the session auto-resumes with a
+    // wrong elapsed on next launch.
+    let engine = app.state::<EngineState>();
+    let needs_finalize = engine
+        .0
+        .lock()
+        .map(|s| s.status != TimerStatus::Idle)
+        .unwrap_or(false);
+    if needs_finalize {
+        if let Ok(mut state) = engine.0.lock() {
+            if let Err(e) = commands::finalize_session(&mut state, app, false) {
+                eprintln!("[flint] finalize session on quit failed: {}", e);
+            }
+        }
+    }
     app.exit(0);
 }

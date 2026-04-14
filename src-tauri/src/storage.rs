@@ -62,6 +62,13 @@ pub struct RecoveryFile {
     pub current_interval: Option<Interval>,
     #[serde(default)]
     pub plugin_data: serde_json::Value,
+    // Wall-clock time at which this recovery snapshot was written. Used by
+    // restore to compute how much real time has passed while the app was
+    // down. For Running sessions we forward-advance elapsed by that delta;
+    // for Paused sessions we do NOT — the stored elapsed is already correct
+    // because the clock was not moving while paused.
+    #[serde(default = "Utc::now")]
+    pub last_saved_at: DateTime<Utc>,
 }
 
 pub fn write_recovery(state: &TimerState) -> Result<(), String> {
@@ -83,6 +90,7 @@ pub fn write_recovery(state: &TimerState) -> Result<(), String> {
         intervals: state.completed_intervals.clone(),
         current_interval: state.current_interval.clone(),
         plugin_data: serde_json::json!({}),
+        last_saved_at: Utc::now(),
     };
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
     let path = recovery_path()?;
@@ -108,6 +116,38 @@ pub fn load_recovery() -> Option<RecoveryFile> {
         Ok(r) => Some(r),
         Err(e) => {
             eprintln!("[flint] recovery.json parse error: {}", e);
+            // B-H4: preserve the broken file rather than silently losing it,
+            // so the user (or a bug report) can inspect what went wrong.
+            rename_broken(&path);
+            None
+        }
+    }
+}
+
+/// Rename a file to `<name>.broken.<unix-timestamp>` so a corrupted on-disk
+/// file can be inspected later instead of being silently overwritten by a
+/// fresh default. Used by recovery/config parse error paths. Returns the new
+/// path on success.
+pub fn rename_broken(path: &std::path::Path) -> Option<PathBuf> {
+    let ts = chrono::Utc::now().timestamp();
+    let filename = path.file_name()?;
+    let new_name = format!("{}.broken.{}", filename.to_string_lossy(), ts);
+    let new_path = path.with_file_name(new_name);
+    match fs::rename(path, &new_path) {
+        Ok(_) => {
+            eprintln!(
+                "[flint] renamed broken {} → {}",
+                path.display(),
+                new_path.display()
+            );
+            Some(new_path)
+        }
+        Err(e) => {
+            eprintln!(
+                "[flint] failed to rename broken {}: {}",
+                path.display(),
+                e
+            );
             None
         }
     }

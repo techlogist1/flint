@@ -70,6 +70,14 @@ pub struct HeatmapCell {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LifetimeTotals {
+    pub longest_session_sec: i64,
+    pub best_day_date: Option<String>,
+    pub best_day_focus_sec: i64,
+    pub all_time_focus_sec: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RangeStats {
     pub total_focus_sec: i64,
     pub total_sessions: i64,
@@ -637,6 +645,47 @@ pub fn heatmap(conn: &Connection, days: i64) -> Result<Vec<HeatmapCell>, String>
         cursor = cursor + Duration::days(1);
     }
     Ok(cells)
+}
+
+pub fn lifetime_totals(conn: &Connection) -> Result<LifetimeTotals, String> {
+    let mut stmt = conn
+        .prepare("SELECT started_at, duration_sec, intervals FROM sessions WHERE completed = 1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+
+    let mut longest: i64 = 0;
+    let mut total: i64 = 0;
+    let mut by_day: HashMap<NaiveDate, i64> = HashMap::new();
+
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let started_raw: String = row.get(0).map_err(|e| e.to_string())?;
+        let duration_sec: i64 = row.get(1).map_err(|e| e.to_string())?;
+        let intervals_raw: String = row.get(2).map_err(|e| e.to_string())?;
+        let focus = focus_sec_for_session(duration_sec, &intervals_raw);
+        if focus <= 0 {
+            continue;
+        }
+        if focus > longest {
+            longest = focus;
+        }
+        total += focus;
+        if let Some(dt) = parse_started(&started_raw) {
+            *by_day.entry(dt.date_naive()).or_insert(0) += focus;
+        }
+    }
+
+    let (best_day_date, best_day_focus_sec) = by_day
+        .into_iter()
+        .max_by_key(|(_, v)| *v)
+        .map(|(date, focus)| (Some(date.format("%Y-%m-%d").to_string()), focus))
+        .unwrap_or((None, 0));
+
+    Ok(LifetimeTotals {
+        longest_session_sec: longest,
+        best_day_date,
+        best_day_focus_sec,
+        all_time_focus_sec: total,
+    })
 }
 
 pub fn month_range(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {

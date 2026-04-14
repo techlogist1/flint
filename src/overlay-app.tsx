@@ -181,13 +181,9 @@ export function OverlayApp() {
       onPointerDown={onPointerDown}
     >
       <div
-        className={`flex w-full flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/95 shadow-2xl backdrop-blur-md ${
+        className={`flex w-full flex-col overflow-hidden rounded-lg border border-white/5 bg-[var(--bg-secondary)]/80 backdrop-blur-md ${
           view === "expanded" ? "animate-[flint-overlay-expand_180ms_ease-out]" : ""
         }`}
-        style={{
-          boxShadow:
-            "0 10px 30px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.3)",
-        }}
       >
         {view === "collapsed" ? (
           <div className="flex h-full items-center gap-2.5 px-3">

@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type {
   HeatmapCell,
+  LifetimeTotals,
   RangeStats,
   TagShare,
   TodayStats,
@@ -29,20 +30,23 @@ export function StatsDashboard() {
   const [week, setWeek] = useState<RangeStats | null>(null);
   const [month, setMonth] = useState<RangeStats | null>(null);
   const [heatmap, setHeatmap] = useState<HeatmapCell[] | null>(null);
+  const [lifetime, setLifetime] = useState<LifetimeTotals | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [t, w, m, h] = await Promise.all([
+      const [t, w, m, h, l] = await Promise.all([
         invoke<TodayStats>("stats_today"),
         invoke<RangeStats>("stats_range", { scope: "week" }),
         invoke<RangeStats>("stats_range", { scope: "month" }),
         invoke<HeatmapCell[]>("stats_heatmap", { days: 182 }),
+        invoke<LifetimeTotals>("stats_lifetime"),
       ]);
       setToday(t);
       setWeek(w);
       setMonth(m);
       setHeatmap(h);
+      setLifetime(l);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -87,7 +91,7 @@ export function StatsDashboard() {
         {tab === "today" && <TodayView stats={today} />}
         {tab === "week" && <RangeView stats={week} scope="week" />}
         {tab === "month" && <RangeView stats={month} scope="month" />}
-        {tab === "map" && <HeatmapView cells={heatmap} />}
+        {tab === "map" && <HeatmapView cells={heatmap} lifetime={lifetime} />}
       </div>
     </div>
   );
@@ -203,7 +207,13 @@ function RangeView({
   );
 }
 
-function HeatmapView({ cells }: { cells: HeatmapCell[] | null }) {
+function HeatmapView({
+  cells,
+  lifetime,
+}: {
+  cells: HeatmapCell[] | null;
+  lifetime: LifetimeTotals | null;
+}) {
   if (!cells) {
     return <p className="text-[11px] text-[var(--text-muted)]">Loading…</p>;
   }
@@ -224,8 +234,54 @@ function HeatmapView({ cells }: { cells: HeatmapCell[] | null }) {
         </div>
         <StatsHeatmap cells={cells} />
       </div>
+      <div className="space-y-1">
+        <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+          All-time
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <MetricCard
+            label="Longest session"
+            value={
+              lifetime && lifetime.longest_session_sec > 0
+                ? formatHoursMinutes(lifetime.longest_session_sec)
+                : "—"
+            }
+          />
+          <MetricCard
+            label="Best day"
+            value={
+              lifetime && lifetime.best_day_date
+                ? formatHoursMinutes(lifetime.best_day_focus_sec)
+                : "—"
+            }
+            hint={
+              lifetime?.best_day_date
+                ? formatBestDay(lifetime.best_day_date)
+                : undefined
+            }
+          />
+          <div className="col-span-2">
+            <MetricCard
+              label="All-time focus"
+              value={
+                lifetime ? formatHoursMinutes(lifetime.all_time_focus_sec) : "—"
+              }
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
+}
+
+function formatBestDay(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return date;
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function DailyBarChart({

@@ -163,7 +163,16 @@ pub fn load_or_create(flint_dir: &Path) -> Config {
         if let Ok(content) = fs::read_to_string(&path) {
             match toml::from_str::<Config>(&content) {
                 Ok(cfg) => return cfg,
-                Err(e) => eprintln!("[flint] config.toml parse error: {} — using defaults", e),
+                Err(e) => {
+                    eprintln!(
+                        "[flint] config.toml parse error: {} — preserving broken file and using defaults",
+                        e
+                    );
+                    // B-H4: rename the broken file before we overwrite it
+                    // with defaults, so the user can inspect/restore their
+                    // edits.
+                    crate::storage::rename_broken(&path);
+                }
             }
         }
     }

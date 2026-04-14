@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { SessionLog } from "./session-log";
 import { StatsDashboard } from "./stats-dashboard";
 import { usePlugins } from "./plugin-host";
@@ -15,7 +16,11 @@ interface SidebarProps {
   activeSessionId: string | null;
   onOpenSession: (id: string) => void;
   onOpenSettings: () => void;
+  onResize?: (width: number) => void;
 }
+
+const MIN_SIDEBAR_WIDTH = 160;
+const MAX_SIDEBAR_WIDTH = 360;
 
 export function Sidebar({
   visible,
@@ -23,8 +28,44 @@ export function Sidebar({
   activeSessionId,
   onOpenSession,
   onOpenSettings,
+  onResize,
 }: SidebarProps) {
   const { plugins } = usePlugins();
+  const [localWidth, setLocalWidth] = useState<number | null>(null);
+  const displayWidth = localWidth ?? width;
+
+  useEffect(() => {
+    // External width change (e.g. settings panel save) — clear local
+    // override once the prop catches up with our last drag end.
+    if (localWidth !== null && Math.abs(width - localWidth) < 2) {
+      setLocalWidth(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [width]);
+
+  const onHandlePointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = displayWidth;
+      const clamp = (v: number) =>
+        Math.round(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, v)));
+      const onMove = (me: PointerEvent) => {
+        setLocalWidth(clamp(startWidth + (me.clientX - startX)));
+      };
+      const onUp = (ue: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        const next = clamp(startWidth + (ue.clientX - startX));
+        setLocalWidth(next);
+        onResize?.(next);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [displayWidth, onResize],
+  );
 
   const tabs: SidebarTabDef[] = useMemo(() => {
     const out: SidebarTabDef[] = [];
@@ -62,8 +103,8 @@ export function Sidebar({
 
   return (
     <aside
-      className="flex h-full shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)]"
-      style={{ width }}
+      className="relative flex h-full shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)]"
+      style={{ width: displayWidth }}
     >
       <div className="flex items-center gap-1 border-b border-[var(--border)] px-2 py-2">
         {tabs.length === 0 ? (
@@ -109,6 +150,17 @@ export function Sidebar({
           </span>
         </button>
       </div>
+
+      {/* D-H4: 4px invisible hit target on the right edge for edge-drag
+          resize. Sits above content (z-10) so it catches pointer events
+          even when overlapping scrollable regions. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={onHandlePointerDown}
+        className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize"
+        title="Drag to resize"
+      />
     </aside>
   );
 }

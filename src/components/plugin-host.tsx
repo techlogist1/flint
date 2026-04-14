@@ -12,6 +12,7 @@ import {
   createPluginAPI,
   type PluginEventCallback,
 } from "../lib/plugin-api";
+import { runInSandbox } from "../lib/plugin-sandbox";
 import type { PluginDescriptor } from "../lib/plugins";
 
 interface PluginNotification {
@@ -188,9 +189,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           renderSlot,
           showNotification,
         });
-        // eslint-disable-next-line no-new-func
-        const runner = new Function("flint", p.source);
-        runner(api);
+        runInSandbox(p.source, api);
       } catch (e) {
         console.error(
           `[plugin ${p.manifest.id}] activation failed:`,

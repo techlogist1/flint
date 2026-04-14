@@ -1,5 +1,6 @@
 use crate::cache::{
-    self, CacheState, CachedSession, HeatmapCell, RangeStats, SessionDetail, TodayStats,
+    self, CacheState, CachedSession, HeatmapCell, LifetimeTotals, RangeStats, SessionDetail,
+    TodayStats,
 };
 use crate::config::{self, Config};
 use crate::plugins::{LoadedPlugin, PluginDescriptor};
@@ -120,7 +121,7 @@ pub fn resume_session(
     Ok(state.clone())
 }
 
-fn finalize_session(
+pub(crate) fn finalize_session(
     state: &mut TimerState,
     app: &AppHandle,
     completed: bool,
@@ -639,6 +640,20 @@ pub fn stats_heatmap(
     };
     let n = days.unwrap_or(182).clamp(7, 730);
     cache::heatmap(conn, n)
+}
+
+#[tauri::command]
+pub fn stats_lifetime(cache_state: State<'_, CacheState>) -> Result<LifetimeTotals, String> {
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(LifetimeTotals {
+            longest_session_sec: 0,
+            best_day_date: None,
+            best_day_focus_sec: 0,
+            all_time_focus_sec: 0,
+        });
+    };
+    cache::lifetime_totals(conn)
 }
 
 #[tauri::command]

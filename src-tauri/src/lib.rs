@@ -78,12 +78,8 @@ fn tick_once(app: &AppHandle) {
     tray::update_tooltip(app);
 }
 
-fn build_initial_state() -> (TimerState, bool) {
+fn apply_recovery(rec: storage::RecoveryFile, now: chrono::DateTime<chrono::Utc>) -> TimerState {
     let mut state = TimerState::idle();
-    let Some(rec) = storage::load_recovery() else {
-        return (state, false);
-    };
-
     let status = match rec.status.as_str() {
         "paused" => TimerStatus::Paused,
         _ => TimerStatus::Running,
@@ -91,11 +87,11 @@ fn build_initial_state() -> (TimerState, bool) {
 
     // If the session was running when the app closed, advance the clock by the
     // wall-clock time that has passed since the recovery file was last updated.
-    // A paused session keeps its stored elapsed_sec exactly.
+    // A paused session keeps its stored elapsed_sec exactly — any pause time
+    // must NOT be counted into elapsed, which is why we measure from
+    // last_saved_at (snapshot time), not started_at (session start).
     let extra_sec: u64 = if status == TimerStatus::Running {
-        let now = chrono::Utc::now();
-        let since_start = (now - rec.started_at).num_seconds().max(0) as u64;
-        since_start.saturating_sub(rec.elapsed_sec)
+        (now - rec.last_saved_at).num_seconds().max(0) as u64
     } else {
         0
     };
@@ -113,7 +109,98 @@ fn build_initial_state() -> (TimerState, bool) {
         ci
     });
     state.recovery_pending = true;
-    (state, true)
+    state
+}
+
+fn build_initial_state() -> (TimerState, bool) {
+    match storage::load_recovery() {
+        Some(rec) => (apply_recovery(rec, chrono::Utc::now()), true),
+        None => (TimerState::idle(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::RecoveryFile;
+    use crate::timer::Interval;
+    use chrono::{Duration, Utc};
+
+    fn make_rec(status: &str, elapsed_sec: u64, last_saved_secs_ago: i64) -> RecoveryFile {
+        let now = Utc::now();
+        let started_at = now - Duration::seconds(last_saved_secs_ago + 60);
+        let last_saved_at = now - Duration::seconds(last_saved_secs_ago);
+        RecoveryFile {
+            session_id: "deadbeef".into(),
+            started_at,
+            elapsed_sec,
+            mode: "pomodoro".into(),
+            status: status.into(),
+            tags: vec!["physics".into()],
+            questions_done: 0,
+            intervals: Vec::new(),
+            current_interval: Some(Interval {
+                interval_type: "focus".into(),
+                start_sec: 0,
+                elapsed_sec,
+                target_sec: Some(1500),
+                ended_emitted: false,
+            }),
+            plugin_data: serde_json::json!({}),
+            last_saved_at,
+        }
+    }
+
+    // B-C1 regression: a paused session must NOT inflate elapsed_sec on restore,
+    // regardless of how long the app was down. Previously the restore math used
+    // `now - started_at - elapsed_sec` which silently added pause time into
+    // elapsed every time the session was resumed.
+    #[test]
+    fn paused_session_does_not_advance_on_restore() {
+        // Session ran 1 min, was paused, then app sat for 30 min, then crashed.
+        // Recovery file was last saved mid-pause with elapsed_sec = 70.
+        let rec = make_rec("paused", 70, 30 * 60);
+        let state = apply_recovery(rec, Utc::now());
+        assert_eq!(state.elapsed_sec, 70);
+        assert_eq!(
+            state
+                .current_interval
+                .as_ref()
+                .map(|i| i.elapsed_sec)
+                .unwrap_or(0),
+            70
+        );
+    }
+
+    // Full B-C1 scenario: start, pause 30min, resume, crash 5s later, restore.
+    // At resume, the recovery file is re-written so last_saved_at jumps to
+    // resume time; the subsequent crash happens only 5s after that. Elapsed
+    // should be ~75s (70 stored + 5s extra), NOT ~1875s as the bug produced.
+    #[test]
+    fn running_session_advances_only_from_last_saved() {
+        // 5 seconds ago the app saved recovery showing a running session at
+        // elapsed_sec = 70. The 30-minute pause that came before is already
+        // excluded from elapsed_sec because the clock wasn't ticking then.
+        let rec = make_rec("running", 70, 5);
+        let state = apply_recovery(rec, Utc::now());
+        // Allow a 1s wall-clock jitter window for the test.
+        assert!(
+            (74..=76).contains(&state.elapsed_sec),
+            "expected ~75, got {}",
+            state.elapsed_sec
+        );
+    }
+
+    #[test]
+    fn running_session_with_zero_downtime_is_unchanged() {
+        let rec = make_rec("running", 42, 0);
+        let state = apply_recovery(rec, Utc::now());
+        assert!(
+            (42..=43).contains(&state.elapsed_sec),
+            "expected 42–43, got {}",
+            state.elapsed_sec
+        );
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -258,6 +345,7 @@ pub fn run() {
             commands::stats_today,
             commands::stats_range,
             commands::stats_heatmap,
+            commands::stats_lifetime,
             commands::rebuild_cache,
             commands::get_app_state,
             commands::mark_first_close_shown,
