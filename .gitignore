@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Databases (source of truth is JSON session files)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust
+**/*.rs.bk
+Cargo.lock.bak
