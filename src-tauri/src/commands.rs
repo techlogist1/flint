@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::storage;
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::Utc;
@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 pub struct EngineState(pub Mutex<TimerState>);
+pub struct ConfigState(pub Mutex<Config>);
 
 fn generate_id() -> String {
     let n: u32 = rand::thread_rng().gen();
@@ -33,7 +34,7 @@ pub fn start_session(
     mode: String,
     tags: Vec<String>,
     engine: State<'_, EngineState>,
-    config: State<'_, Config>,
+    config: State<'_, ConfigState>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -41,7 +42,9 @@ pub fn start_session(
         return Err("a session is already active".into());
     }
     let id = generate_id();
-    let interval = build_first_interval(&mode, &config);
+    let cfg = config.0.lock().map_err(|e| e.to_string())?;
+    let interval = build_first_interval(&mode, &cfg);
+    drop(cfg);
     let it_type = interval.interval_type.clone();
     let it_target = interval.target_sec;
 
@@ -213,13 +216,14 @@ pub fn get_timer_state(
 #[tauri::command]
 pub fn next_interval(
     engine: State<'_, EngineState>,
-    config: State<'_, Config>,
+    config: State<'_, ConfigState>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
     if state.status == TimerStatus::Idle {
         return Err("no active session".into());
     }
+    let config = config.0.lock().map_err(|e| e.to_string())?;
     let Some(current) = state.current_interval.take() else {
         return Err("no current interval".into());
     };
@@ -303,4 +307,27 @@ pub fn set_tags(
     state.tags = tags;
     storage::write_recovery(&state)?;
     Ok(state.clone())
+}
+
+#[tauri::command]
+pub fn get_config(config: State<'_, ConfigState>) -> Result<Config, String> {
+    let cfg = config.0.lock().map_err(|e| e.to_string())?;
+    Ok(cfg.clone())
+}
+
+#[tauri::command]
+pub fn update_config(
+    new_config: Config,
+    config: State<'_, ConfigState>,
+) -> Result<Config, String> {
+    let dir = storage::flint_dir()?;
+    config::save(&dir, &new_config)?;
+    let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
+    *cfg = new_config.clone();
+    Ok(new_config)
+}
+
+#[tauri::command]
+pub fn get_flint_dir() -> Result<String, String> {
+    storage::flint_dir().map(|p| p.display().to_string())
 }

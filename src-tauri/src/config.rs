@@ -134,6 +134,12 @@ impl Default for Config {
     }
 }
 
+pub fn save(flint_dir: &Path, cfg: &Config) -> Result<(), String> {
+    let path = flint_dir.join("config.toml");
+    let s = toml::to_string_pretty(cfg).map_err(|e| format!("serialize config: {}", e))?;
+    fs::write(&path, s).map_err(|e| format!("write {}: {}", path.display(), e))
+}
+
 pub fn load_or_create(flint_dir: &Path) -> Config {
     let path = flint_dir.join("config.toml");
     if path.exists() {

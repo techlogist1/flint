@@ -6,7 +6,7 @@ mod timer;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use commands::EngineState;
+use commands::{ConfigState, EngineState};
 use tauri::{AppHandle, Emitter, Manager};
 use timer::{TimerState, TimerStatus};
 
@@ -132,7 +132,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
-        .manage(cfg)
+        .manage(ConfigState(Mutex::new(cfg)))
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -155,6 +155,9 @@ pub fn run() {
             commands::get_timer_state,
             commands::next_interval,
             commands::set_tags,
+            commands::get_config,
+            commands::update_config,
+            commands::get_flint_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
