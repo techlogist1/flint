@@ -321,6 +321,43 @@ function AppShell() {
         return;
       }
 
+      // PR-H4: Tab cycles focus between sidebar and main regions. Only
+      // plain Tab (no modifier) outside inputs — Shift+Tab and inner
+      // focus cycling are left to the browser. If the sidebar is hidden
+      // there is nothing to swap to, so we let Tab pass through. When
+      // landing in a region, prefer its first focusable descendant so
+      // the session-log roving tabindex (PR-H5) receives the focus
+      // and arrow keys work immediately.
+      if (
+        e.key === "Tab" &&
+        !e.shiftKey &&
+        !mod &&
+        !e.altKey &&
+        !inInput &&
+        sidebarVisible
+      ) {
+        const sidebarEl = document.getElementById("flint-sidebar");
+        const mainEl = document.getElementById("flint-main");
+        if (sidebarEl && mainEl) {
+          e.preventDefault();
+          const inSidebar = sidebarEl.contains(document.activeElement);
+          const target = inSidebar ? mainEl : sidebarEl;
+          // Prefer a roving-tabindex target if one exists in the
+          // region — that way landing in the sidebar puts focus on
+          // the session log's selected row and arrow keys work
+          // immediately. Fall back to any natural focusable child,
+          // or the region container as a last resort.
+          const rovingFocus = target.querySelector<HTMLElement>('[tabindex="0"]');
+          const first =
+            rovingFocus ??
+            target.querySelector<HTMLElement>(
+              'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), a[href]',
+            );
+          (first ?? target).focus();
+        }
+        return;
+      }
+
       if (inInput) return;
 
       if (e.key === "Enter") {
@@ -368,6 +405,7 @@ function AppShell() {
     view,
     stopConfirmOpen,
     tagInputOpen,
+    sidebarVisible,
     startSession,
     confirmStop,
     closeSessionDetail,
@@ -390,7 +428,15 @@ function AppShell() {
         onResize={onSidebarResize}
       />
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      {/* PR-H4: main-area focus target. tabIndex={-1} makes it
+          programmatically focusable so Tab (handled in the keyboard
+          effect above) can swap focus between the sidebar and main
+          regions without triggering the default tab-cycle behaviour. */}
+      <main
+        id="flint-main"
+        tabIndex={-1}
+        className="flex min-w-0 flex-1 flex-col outline-none"
+      >
         {view === "timer" && (
           <div
             key="view-timer"

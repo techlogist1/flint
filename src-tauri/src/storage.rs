@@ -19,6 +19,28 @@ pub fn flint_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// S-H5 / C-M4: atomic file write. Serialises `data` to a `<path>.tmp`
+/// sibling, then renames it into place. `fs::rename` is atomic on both
+/// Windows NTFS and macOS APFS, so a crash/poweroff at any point leaves
+/// either the previous file or the new file intact — never a truncated
+/// half-write. Used for session JSON files and recovery snapshots.
+pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("no file name in {}", path.display()))?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = path.with_file_name(tmp_name);
+    fs::write(&tmp_path, data)
+        .map_err(|e| format!("write {}: {}", tmp_path.display(), e))?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        // Best-effort cleanup of the tmp file so a failed rename doesn't
+        // leak a stale sibling into the sessions/ directory.
+        let _ = fs::remove_file(&tmp_path);
+        format!("rename {} -> {}: {}", tmp_path.display(), path.display(), e)
+    })
+}
+
 pub fn recovery_path() -> Result<PathBuf, String> {
     Ok(flint_dir()?.join("recovery.json"))
 }
@@ -50,7 +72,7 @@ pub fn load_app_state() -> AppState {
 pub fn save_app_state(state: &AppState) -> Result<(), String> {
     let path = state_path()?;
     let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))
+    write_atomic(&path, json.as_bytes())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,7 +158,7 @@ fn write_snapshot_to_disk(snapshot: RecoverySnapshot) -> Result<(), String> {
     let payload = snapshot.into_payload();
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
     let path = recovery_path()?;
-    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))
+    write_atomic(&path, json.as_bytes())
 }
 
 /// Messages accepted by the background recovery writer. Snapshots are
@@ -349,7 +371,7 @@ pub fn write_session_file(
         "plugin_data": {},
     });
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| e.to_string())?;
+    write_atomic(&path, json.as_bytes())?;
     Ok(path)
 }
 

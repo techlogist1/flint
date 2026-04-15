@@ -349,11 +349,16 @@ pub fn get_config(config: State<'_, ConfigState>) -> Result<Config, String> {
 pub fn update_config(
     new_config: Config,
     config: State<'_, ConfigState>,
+    app: AppHandle,
 ) -> Result<Config, String> {
     let dir = storage::flint_dir()?;
     config::save(&dir, &new_config)?;
     let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
     *cfg = new_config.clone();
+    // O-H3: live-apply overlay opacity/position — no restart needed.
+    let overlay_cfg = cfg.overlay.clone();
+    drop(cfg);
+    crate::overlay::apply_overlay_config(&app, &overlay_cfg);
     Ok(new_config)
 }
 
@@ -507,6 +512,54 @@ pub fn set_plugin_config(
     Ok(value)
 }
 
+/// S-H2: hard cap on plugin storage file size. A runaway plugin (malicious
+/// or buggy) cannot OOM the Tauri backend by stuffing arbitrary blobs into
+/// its storage directory. 5 MB is well above any legitimate plugin need and
+/// small enough to always fit in RAM.
+const PLUGIN_STORAGE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+const STORAGE_KEY_ERROR: &str =
+    "Storage key must contain only letters, numbers, underscores, hyphens, and dots";
+
+/// S-H1: strict validation for the filename component of a plugin storage
+/// key. Accepts only `[A-Za-z0-9_.-]+` and rejects Windows reserved device
+/// names case-insensitively, with or without extension (`CON`, `CON.txt`,
+/// `NUL`, `COM0`..`COM9`, `LPT0`..`LPT9`, etc). Without this, a plugin
+/// could call `flint.storage.set("CON", …)` and `fs::write` would fail with
+/// an opaque Windows error; worse, names containing `:` or `*` would pass
+/// the old blocklist and still crash.
+fn validate_storage_key(key: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err(STORAGE_KEY_ERROR.into());
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(STORAGE_KEY_ERROR.into());
+    }
+    let stem = key.split('.').next().unwrap_or(key).to_ascii_uppercase();
+    const RESERVED: &[&str] = &["CON", "PRN", "AUX", "NUL"];
+    if RESERVED.contains(&stem.as_str()) {
+        return Err(STORAGE_KEY_ERROR.into());
+    }
+    if stem.len() == 4 {
+        let mut chars = stem.chars();
+        let a = chars.next();
+        let b = chars.next();
+        let c = chars.next();
+        let d = chars.next();
+        if let (Some(a), Some(b), Some(c), Some(d)) = (a, b, c, d) {
+            let is_com_or_lpt =
+                (a == 'C' && b == 'O' && c == 'M') || (a == 'L' && b == 'P' && c == 'T');
+            if is_com_or_lpt && d.is_ascii_digit() {
+                return Err(STORAGE_KEY_ERROR.into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn plugin_storage_dir(plugin_id: &str) -> Result<std::path::PathBuf, String> {
     if plugin_id.is_empty()
         || plugin_id.contains('/')
@@ -527,9 +580,7 @@ fn plugin_storage_key_path(
     plugin_id: &str,
     key: &str,
 ) -> Result<std::path::PathBuf, String> {
-    if key.is_empty() || key.contains('/') || key.contains('\\') || key.contains("..") {
-        return Err(format!("invalid storage key: {}", key));
-    }
+    validate_storage_key(key)?;
     Ok(plugin_storage_dir(plugin_id)?.join(format!("{}.json", key)))
 }
 
@@ -538,6 +589,10 @@ pub fn plugin_storage_get(plugin_id: String, key: String) -> Result<Value, Strin
     let path = plugin_storage_key_path(&plugin_id, &key)?;
     if !path.exists() {
         return Ok(Value::Null);
+    }
+    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.len() > PLUGIN_STORAGE_MAX_BYTES {
+        return Err("Storage value exceeds 5 MB limit".into());
     }
     let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
@@ -551,6 +606,9 @@ pub fn plugin_storage_set(
 ) -> Result<(), String> {
     let path = plugin_storage_key_path(&plugin_id, &key)?;
     let data = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    if data.len() as u64 > PLUGIN_STORAGE_MAX_BYTES {
+        return Err("Storage value exceeds 5 MB limit".into());
+    }
     std::fs::write(&path, data).map_err(|e| e.to_string())
 }
 
@@ -740,6 +798,92 @@ pub fn shutdown_with_finalize(app: &AppHandle) {
 pub fn quit_app(app: AppHandle) {
     shutdown_with_finalize(&app);
     app.exit(0);
+}
+
+/// PR-H3: open the user's ~/.flint/ directory in the system file explorer.
+/// Uses the platform-native command (explorer on Windows, open on macOS,
+/// xdg-open on Linux) — a tiny shell-out avoids pulling in the full
+/// tauri-plugin-opener dependency for a single button.
+#[tauri::command]
+pub fn open_data_folder() -> Result<(), String> {
+    let dir = storage::flint_dir()?;
+    open_path_in_explorer(&dir)
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("explorer: {}", e))
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("open: {}", e))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("xdg-open: {}", e))
+}
+
+/// PR-H3: export every JSON session file under ~/.flint/sessions/ as a
+/// single combined JSON array, written atomically to ~/.flint/exports/.
+/// Returns the final path so the UI can surface it in a success toast.
+/// Kept self-contained (no dialog plugin) to match the local-first,
+/// minimal-dep ethos — the user can reveal the export via "Open data folder".
+#[tauri::command]
+pub fn export_all_sessions() -> Result<String, String> {
+    let root = storage::flint_dir()?;
+    let exports_dir = root.join("exports");
+    std::fs::create_dir_all(&exports_dir)
+        .map_err(|e| format!("create {}: {}", exports_dir.display(), e))?;
+
+    let sessions_dir = root.join("sessions");
+    let mut all_sessions: Vec<Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str::<Value>(&content) {
+                    Ok(value) => all_sessions.push(value),
+                    Err(e) => eprintln!(
+                        "[flint] skip malformed session {}: {}",
+                        path.display(),
+                        e
+                    ),
+                },
+                Err(e) => eprintln!("[flint] read {}: {}", path.display(), e),
+            }
+        }
+    }
+
+    // Sort by started_at so the export is deterministic regardless of the
+    // order the filesystem walks returned files.
+    all_sessions.sort_by(|a, b| {
+        let ak = a.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+        let bk = b.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+        ak.cmp(bk)
+    });
+
+    let ts = Utc::now().format("%Y-%m-%d_%H%M%S");
+    let out_path = exports_dir.join(format!("flint_sessions_{}.json", ts));
+    let json = serde_json::to_string_pretty(&all_sessions).map_err(|e| e.to_string())?;
+    storage::write_atomic(&out_path, json.as_bytes())?;
+    Ok(out_path.display().to_string())
 }
 
 #[cfg(test)]

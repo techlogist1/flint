@@ -18,7 +18,16 @@ import {
   type TickState,
 } from "./hooks/use-timer";
 import { formatTime } from "./lib/format";
-import { fallbackModeLabel } from "./lib/types";
+import { fallbackModeLabel, type Config } from "./lib/types";
+
+interface OverlayConfigPayload {
+  enabled: boolean;
+  position: string;
+  opacity: number;
+  x?: number | null;
+  y?: number | null;
+  always_visible: boolean;
+}
 
 type View = "collapsed" | "expanded";
 
@@ -57,6 +66,33 @@ export function OverlayApp() {
   // cannot display.
   const [visible, setVisible] = useState(true);
   const tick = useTickState(visible);
+
+  // O-H3: surface opacity comes from config.overlay.opacity — read from
+  // the backend on mount and live-updated via the `overlay:config` event
+  // emitted by `update_config`. Starts at 1.0 so a miss-fire just leaves
+  // the overlay fully opaque instead of invisible.
+  const [surfaceOpacity, setSurfaceOpacity] = useState(1);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<Config>("get_config")
+      .then((cfg) => {
+        if (!cancelled) setSurfaceOpacity(cfg.overlay.opacity);
+      })
+      .catch(() => {});
+    let unlisten: UnlistenFn | null = null;
+    listen<OverlayConfigPayload>("overlay:config", (evt) => {
+      setSurfaceOpacity(evt.payload.opacity);
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
@@ -114,17 +150,41 @@ export function OverlayApp() {
     forceRender();
   }, []);
 
-  // Drag tracking — only flipped true while the user is actively moving
-  // the window so onFocusChanged can distinguish a drag-induced focus loss
-  // from a genuine click-elsewhere.
+  // O-H1: drag tracking is tied to real pointer input events, not a wall-
+  // clock timer. The flag flips true the moment `startDragging()` is
+  // called and flips false when the browser delivers `pointerup` (or any
+  // of the fallback end-of-gesture events). No setTimeout heuristic, no
+  // race against `onFocusChanged` — the guard clears exactly when the
+  // user lets go, regardless of how long the drag lasted.
   const isDraggingRef = useRef(false);
-  const dragClearTimerRef = useRef<number | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  const beginDragTracking = useCallback(() => {
+    if (isDraggingRef.current) return;
+    isDraggingRef.current = true;
+    const onEnd = () => {
+      isDraggingRef.current = false;
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      window.removeEventListener("mouseup", onEnd);
+      window.removeEventListener("blur", onEnd);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current = onEnd;
+    // Multiple safety nets: `pointerup` is the primary signal, but on
+    // Windows the OS captures the mouse for the duration of
+    // `startDragging()` and Chromium may not always surface it. `blur`
+    // catches the case where focus lands on the main window after a
+    // successful drop; `pointercancel` catches touch/pen cancellation.
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+    window.addEventListener("mouseup", onEnd);
+    window.addEventListener("blur", onEnd);
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (dragClearTimerRef.current != null) {
-        window.clearTimeout(dragClearTimerRef.current);
-      }
+      dragCleanupRef.current?.();
     };
   }, []);
 
@@ -164,19 +224,9 @@ export function OverlayApp() {
     const window_ = getCurrentWindow();
     window_
       .onMoved(() => {
+        // Position autosave only — drag-flag lifecycle is owned by
+        // beginDragTracking + the pointerup listener (O-H1).
         queueSavePosition();
-        // The OS fires onMoved continuously during a drag and stops once the
-        // user releases. Debounce the dragging-clear so the focus-change that
-        // arrives just after the drag still sees the guard set.
-        if (isDraggingRef.current) {
-          if (dragClearTimerRef.current != null) {
-            window.clearTimeout(dragClearTimerRef.current);
-          }
-          dragClearTimerRef.current = window.setTimeout(() => {
-            isDraggingRef.current = false;
-            dragClearTimerRef.current = null;
-          }, 200);
-        }
       })
       .then((fn) => {
         unlistenMoved = fn;
@@ -219,14 +269,22 @@ export function OverlayApp() {
         const dy = me.clientY - startY;
         if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
           dragging = true;
-          isDraggingRef.current = true;
+          // O-H1: arm the pointerup-based drag guard BEFORE calling
+          // startDragging(). Once the OS takes control, our local
+          // pointermove/pointerup listeners stop firing — the global
+          // listeners installed by beginDragTracking are what actually
+          // clear the flag on release.
+          beginDragTracking();
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", onUp);
           getCurrentWindow()
             .startDragging()
             .catch((err) => {
               console.error("startDragging failed", err);
-              isDraggingRef.current = false;
+              // Clean up the pointerup listener immediately if the OS
+              // drag never actually started so we do not leave a stale
+              // guard flag.
+              dragCleanupRef.current?.();
             });
         }
       };
@@ -242,13 +300,25 @@ export function OverlayApp() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [toggle],
+    [toggle, beginDragTracking],
   );
 
   // O-C2: container is always at the expanded size. clip-path animates the
   // visible region between the pill silhouette (collapsed) and the full
   // rectangle (expanded). clip-path is GPU-composited in Chromium — zero
   // layout passes per frame.
+  // O-H3: `opacity` reflects `config.overlay.opacity`, updated live via
+  // the `overlay:config` event.
+  // O-H4: the expanded/collapsed inner layers (below) are mutually
+  // exclusive in pointer-events — exactly one has `auto` at any given
+  // frame, and both flip at the same React render. The old 150ms delay-
+  // induced dead zone where neither layer caught clicks is gone: the
+  // collapsed layer keeps `pointer-events: auto` while it fades in, and
+  // the expanded layer keeps `pointer-events: auto` for the whole
+  // duration of its fade-in. The clip-path rewrite (O-C2) collapsed the
+  // layout-resize window that made the old cross-fade visible, so the
+  // delay on the opacity transition no longer masks any interactive
+  // surface.
   const containerStyle: CSSProperties = {
     width: EXPANDED_W,
     height: EXPANDED_H,
@@ -258,6 +328,7 @@ export function OverlayApp() {
     transition: isExpanded ? EXPAND_TRANSITION : COLLAPSE_TRANSITION,
     willChange: "clip-path, opacity",
     pointerEvents: "auto",
+    opacity: surfaceOpacity,
   };
 
   return (

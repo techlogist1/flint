@@ -14,8 +14,49 @@ const CELL = 11;
 const GAP = 2;
 const LABEL_H = 14;
 
+// V-H1: single source of truth for the five-step heatmap ramp. Resolved
+// from CSS variables at mount time so a single `--accent` edit in
+// index.css flows through to every cell + legend swatch. Both the
+// cellColor mapper and the Legend component render from this exact
+// array — no more twin hex lists drifting out of sync.
+function resolveRamp(): string[] {
+  const root = document.documentElement;
+  const read = (name: string, fallback: string) =>
+    getComputedStyle(root).getPropertyValue(name).trim() || fallback;
+  return [
+    read("--bg-elevated", "#2d2d2d"),
+    read("--accent-25", "#16a34a40"),
+    read("--accent-45", "#16a34a70"),
+    read("--accent-65", "#16a34aa0"),
+    read("--accent", "#16a34a"),
+  ];
+}
+
+function resolveMonthLabelColor(): string {
+  return (
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--text-muted")
+      .trim() || "#555555"
+  );
+}
+
+function cellColorFromRamp(
+  day: HeatmapCell | null,
+  max: number,
+  ramp: string[],
+): string {
+  if (!day || day.focus_sec <= 0 || max <= 0) return ramp[0];
+  const ratio = Math.min(1, day.focus_sec / max);
+  if (ratio < 0.25) return ramp[1];
+  if (ratio < 0.5) return ramp[2];
+  if (ratio < 0.75) return ramp[3];
+  return ramp[4];
+}
+
 export function StatsHeatmap({ cells }: StatsHeatmapProps) {
   const { columns, maxFocus, monthLabels } = useMemo(() => build(cells), [cells]);
+  const ramp = useMemo(() => resolveRamp(), []);
+  const monthColor = useMemo(() => resolveMonthLabelColor(), []);
 
   if (cells.length === 0) {
     return (
@@ -41,7 +82,7 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
             x={label.x * (CELL + GAP)}
             y={10}
             fontSize={9}
-            fill="#555555"
+            fill={monthColor}
             fontFamily="ui-monospace, monospace"
           >
             {label.text}
@@ -59,7 +100,7 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
                   height={CELL}
                   rx={2}
                   ry={2}
-                  fill={cellColor(day, maxFocus)}
+                  fill={cellColorFromRamp(day, maxFocus, ramp)}
                 >
                   {day && (
                     <title>
@@ -75,7 +116,7 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
           ))}
         </g>
       </svg>
-      <Legend />
+      <Legend ramp={ramp} />
     </div>
   );
 }
@@ -135,23 +176,13 @@ function build(cells: HeatmapCell[]): {
   return { columns, maxFocus, monthLabels };
 }
 
-function cellColor(day: HeatmapCell | null, max: number): string {
-  if (!day || day.focus_sec <= 0 || max <= 0) return "#2d2d2d";
-  const ratio = Math.min(1, day.focus_sec / max);
-  if (ratio < 0.25) return "#16a34a40";
-  if (ratio < 0.5) return "#16a34a70";
-  if (ratio < 0.75) return "#16a34aa0";
-  return "#16a34a";
-}
-
-function Legend() {
-  const levels = ["#2d2d2d", "#16a34a40", "#16a34a70", "#16a34aa0", "#16a34a"];
+function Legend({ ramp }: { ramp: string[] }) {
   return (
     <div className="flex items-center justify-end gap-1 text-[9px] text-[var(--text-muted)]">
       <span>less</span>
-      {levels.map((c) => (
+      {ramp.map((c, idx) => (
         <span
-          key={c}
+          key={idx}
           className="inline-block h-2 w-2 rounded-sm"
           style={{ backgroundColor: c }}
         />

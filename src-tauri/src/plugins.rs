@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -34,8 +35,11 @@ pub struct PluginManifest {
     pub events: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_section: Option<String>,
+    // S-H3: IndexMap preserves insertion order from the manifest JSON, so
+    // settings render in the order the plugin author intended rather than
+    // HashMap's non-deterministic iteration order.
     #[serde(default)]
-    pub config_schema: HashMap<String, ConfigSchemaField>,
+    pub config_schema: IndexMap<String, ConfigSchemaField>,
     /// If true, this plugin registers itself as a selectable timer mode.
     /// Controls tray menu entries, Ctrl+N shortcuts, and the default-mode
     /// dropdown so that any community plugin can add a new timer mode by

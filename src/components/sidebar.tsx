@@ -101,8 +101,10 @@ export function Sidebar({
 
   return (
     <aside
+      id="flint-sidebar"
+      tabIndex={-1}
       aria-hidden={!visible}
-      className="relative flex h-full shrink-0 flex-col overflow-hidden bg-[var(--bg-secondary)]"
+      className="relative flex h-full shrink-0 flex-col overflow-hidden bg-[var(--bg-secondary)] outline-none"
       style={{
         width: visible ? displayWidth : 0,
         borderRightWidth: visible ? 1 : 0,
@@ -130,13 +132,40 @@ export function Sidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {active?.pluginId === "session-log" && (
-          <SessionLog
-            activeSessionId={activeSessionId}
-            onOpenSession={onOpenSession}
-          />
+        {/* P-H5: Session Log and Stats stay mounted whenever their plugin
+            is enabled; we toggle visibility via `display` so switching
+            tabs does not trigger a full unmount/remount (and the 5 stats
+            queries that come with it). Community plugins still render
+            the placeholder only when active. */}
+        {tabs.some((t) => t.pluginId === "session-log") && (
+          <div
+            className={
+              active?.pluginId === "session-log"
+                ? "flex h-full min-h-0"
+                : "hidden"
+            }
+          >
+            <div className="min-h-0 flex-1">
+              <SessionLog
+                activeSessionId={activeSessionId}
+                onOpenSession={onOpenSession}
+              />
+            </div>
+          </div>
         )}
-        {active?.pluginId === "stats" && <StatsDashboard />}
+        {tabs.some((t) => t.pluginId === "stats") && (
+          <div
+            className={
+              active?.pluginId === "stats"
+                ? "flex h-full min-h-0"
+                : "hidden"
+            }
+          >
+            <div className="min-h-0 flex-1">
+              <StatsDashboard />
+            </div>
+          </div>
+        )}
         {active && active.pluginId !== "session-log" && active.pluginId !== "stats" && (
           <CommunityTabPlaceholder label={active.label} />
         )}

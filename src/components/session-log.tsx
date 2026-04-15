@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { CachedSession } from "../lib/types";
 import { formatTime } from "../lib/format";
@@ -15,6 +23,13 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [range, setRange] = useState<DateRange>("all");
+  // PR-H5: roving tabindex for keyboard nav. `focusedIndex` is the index
+  // of the currently-focusable session row; ArrowUp/ArrowDown move it,
+  // Enter opens the focused session. Resets to 0 whenever the filter
+  // or underlying list length changes so a shrunk list never traps
+  // focus on a removed index.
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +74,41 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
       return false;
     });
   }, [sessions, query, range]);
+
+  useEffect(() => {
+    setFocusedIndex(0);
+  }, [query, range, filtered.length]);
+
+  const onRowKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLButtonElement>, idx: number) => {
+      if (filtered.length === 0) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = Math.min(filtered.length - 1, idx + 1);
+        setFocusedIndex(next);
+        itemRefs.current[next]?.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = Math.max(0, idx - 1);
+        setFocusedIndex(prev);
+        itemRefs.current[prev]?.focus();
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        setFocusedIndex(0);
+        itemRefs.current[0]?.focus();
+      } else if (e.key === "End") {
+        e.preventDefault();
+        const last = filtered.length - 1;
+        setFocusedIndex(last);
+        itemRefs.current[last]?.focus();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const s = filtered[idx];
+        if (s) onOpenSession(s.id);
+      }
+    },
+    [filtered, onOpenSession],
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -107,13 +157,20 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
               : "No sessions match this filter."}
           </p>
         )}
-        <ul className="space-y-1">
-          {filtered.map((s) => (
-            <li key={s.id}>
+        <ul className="space-y-1" role="listbox" aria-label="Sessions">
+          {filtered.map((s, idx) => (
+            <li key={s.id} role="option" aria-selected={idx === focusedIndex}>
               <SessionRow
+                ref={(el) => {
+                  itemRefs.current[idx] = el;
+                }}
                 session={s}
                 active={s.id === activeSessionId}
+                focused={idx === focusedIndex}
+                tabIndex={idx === focusedIndex ? 0 : -1}
                 onClick={() => onOpenSession(s.id)}
+                onFocus={() => setFocusedIndex(idx)}
+                onKeyDown={(e) => onRowKeyDown(e, idx)}
               />
             </li>
           ))}
@@ -146,55 +203,78 @@ function RangeChip({
   );
 }
 
-function SessionRow({
-  session,
-  active,
-  onClick,
-}: {
+interface SessionRowProps {
   session: CachedSession;
   active: boolean;
+  focused: boolean;
+  tabIndex: number;
   onClick: () => void;
-}) {
-  const date = formatRelativeDate(session.started_at);
-  const duration = formatTime(session.duration_sec);
-  const primaryTag = session.tags[0];
-  const extraTags = session.tags.length > 1 ? `+${session.tags.length - 1}` : "";
-
-  return (
-    <button
-      onClick={onClick}
-      className={`flex w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors duration-100 ease-out ${
-        active
-          ? "border border-[var(--accent)] bg-[var(--accent-subtle)]"
-          : "border border-transparent hover:bg-[var(--bg-elevated)]"
-      }`}
-    >
-      <div className="flex w-full items-center justify-between gap-2 text-[11px]">
-        <span className="truncate text-[var(--text-primary)]">
-          {primaryTag ?? "untagged"}
-          {extraTags && (
-            <span className="ml-1 text-[var(--text-muted)]">{extraTags}</span>
-          )}
-        </span>
-        <span className="font-mono text-[10px] text-[var(--text-secondary)]">
-          {duration}
-        </span>
-      </div>
-      <div className="flex w-full items-center justify-between text-[10px] text-[var(--text-muted)]">
-        <span>{date}</span>
-        <span className="flex items-center gap-2 font-mono">
-          {session.questions_done > 0 && <span>Q:{session.questions_done}</span>}
-          <span className="uppercase tracking-wide">{session.mode.slice(0, 3)}</span>
-          {!session.completed && (
-            <span className="uppercase tracking-wide text-[var(--warning)]">
-              cancel
-            </span>
-          )}
-        </span>
-      </div>
-    </button>
-  );
+  onFocus: () => void;
+  onKeyDown: (e: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }
+
+const SessionRow = forwardRef<HTMLButtonElement, SessionRowProps>(
+  function SessionRow(
+    { session, active, focused, tabIndex, onClick, onFocus, onKeyDown },
+    ref,
+  ) {
+    const date = formatRelativeDate(session.started_at);
+    const duration = formatTime(session.duration_sec);
+    const primaryTag = session.tags[0];
+    const extraTags =
+      session.tags.length > 1 ? `+${session.tags.length - 1}` : "";
+
+    // PR-H5: visible focus ring when the row is the roving-tabindex
+    // target, regardless of whether it also happens to be the
+    // currently-selected (active) session. Active still paints the
+    // accent background; focused adds an extra ring so the user can
+    // tell at a glance where arrow-key focus is.
+    const borderClass = active
+      ? "border border-[var(--accent)] bg-[var(--accent-subtle)]"
+      : focused
+        ? "border border-[var(--accent)] bg-[var(--bg-elevated)]"
+        : "border border-transparent hover:bg-[var(--bg-elevated)]";
+
+    return (
+      <button
+        ref={ref}
+        tabIndex={tabIndex}
+        onClick={onClick}
+        onFocus={onFocus}
+        onKeyDown={onKeyDown}
+        className={`flex w-full flex-col items-start gap-0.5 rounded px-2 py-1.5 text-left transition-colors duration-100 ease-out outline-none ${borderClass}`}
+      >
+        <div className="flex w-full items-center justify-between gap-2 text-[11px]">
+          <span className="truncate text-[var(--text-primary)]">
+            {primaryTag ?? "untagged"}
+            {extraTags && (
+              <span className="ml-1 text-[var(--text-muted)]">{extraTags}</span>
+            )}
+          </span>
+          <span className="font-mono text-[10px] text-[var(--text-secondary)]">
+            {duration}
+          </span>
+        </div>
+        <div className="flex w-full items-center justify-between text-[10px] text-[var(--text-muted)]">
+          <span>{date}</span>
+          <span className="flex items-center gap-2 font-mono">
+            {session.questions_done > 0 && (
+              <span>Q:{session.questions_done}</span>
+            )}
+            <span className="uppercase tracking-wide">
+              {session.mode.slice(0, 3)}
+            </span>
+            {!session.completed && (
+              <span className="uppercase tracking-wide text-[var(--warning)]">
+                cancel
+              </span>
+            )}
+          </span>
+        </div>
+      </button>
+    );
+  },
+);
 
 function rangeCutoff(range: DateRange): number | null {
   if (range === "all") return null;

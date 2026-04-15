@@ -173,34 +173,34 @@ fn toggle_main_window(app: &AppHandle) {
     }
 }
 
-pub fn update_tooltip(app: &AppHandle) {
+/// P-H1: plain-old-data snapshot built by the tick loop while the engine
+/// mutex is held. `update_tooltip` consumes this and needs zero additional
+/// lock acquisitions — no `EngineState`, no `ConfigState`, no `get_*`
+/// round-trip. Formatted with a single `format!` allocation per tick.
+#[derive(Debug, Clone, Copy)]
+pub struct TrayTooltipSnapshot {
+    pub status: TimerStatus,
+    pub elapsed_sec: u64,
+    pub show_timer: bool,
+}
+
+pub fn update_tooltip(app: &AppHandle, snap: &TrayTooltipSnapshot) {
     let Some(tray) = app.tray_by_id("flint-tray") else {
         return;
     };
-    let engine = app.state::<EngineState>();
-    let Ok(state) = engine.0.lock() else { return };
-    let cfg_state = app.state::<ConfigState>();
-    let show_timer = cfg_state
-        .0
-        .lock()
-        .map(|c| c.tray.show_timer_in_tray)
-        .unwrap_or(true);
 
-    let label = match state.status {
+    let label = match snap.status {
         TimerStatus::Idle => "Flint".to_string(),
         TimerStatus::Running | TimerStatus::Paused => {
-            let base = format!(
-                "Flint — {}",
-                match state.status {
-                    TimerStatus::Running => "running",
-                    TimerStatus::Paused => "paused",
-                    _ => "",
-                }
-            );
-            if show_timer {
-                format!("{} · {}", base, format_elapsed(state.elapsed_sec))
+            let base = match snap.status {
+                TimerStatus::Running => "Flint — running",
+                TimerStatus::Paused => "Flint — paused",
+                _ => "Flint",
+            };
+            if snap.show_timer {
+                format!("{} · {}", base, format_elapsed(snap.elapsed_sec))
             } else {
-                base
+                base.to_string()
             }
         }
     };

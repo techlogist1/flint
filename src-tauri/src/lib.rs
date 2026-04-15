@@ -16,6 +16,17 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use timer::{TimerState, TimerStatus};
 
 fn tick_once(app: &AppHandle) {
+    // P-H1: snapshot `show_timer_in_tray` from the config lock *before*
+    // grabbing the engine lock. The tray-tooltip path then needs zero
+    // locks during the tick itself — both acquisitions are sequential,
+    // short, and outside any disk I/O.
+    let show_timer = app
+        .state::<ConfigState>()
+        .0
+        .lock()
+        .map(|c| c.tray.show_timer_in_tray)
+        .unwrap_or(true);
+
     let engine = app.state::<EngineState>();
     let mut state = match engine.0.lock() {
         Ok(s) => s,
@@ -75,8 +86,18 @@ fn tick_once(app: &AppHandle) {
         app.state::<storage::RecoveryWriter>().send_state(&state);
     }
 
+    // P-H1: snapshot the tooltip inputs while the engine lock is still held
+    // (status + elapsed_sec are all the tooltip needs). Once we drop the
+    // lock, `update_tooltip` takes no additional locks at all — zero
+    // contention between tick writes and the tray update.
+    let tooltip_snapshot = tray::TrayTooltipSnapshot {
+        status: state.status,
+        elapsed_sec: state.elapsed_sec,
+        show_timer,
+    };
+
     drop(state);
-    tray::update_tooltip(app);
+    tray::update_tooltip(app, &tooltip_snapshot);
 }
 
 fn apply_recovery(rec: storage::RecoveryFile, now: chrono::DateTime<chrono::Utc>) -> TimerState {
@@ -362,6 +383,8 @@ pub fn run() {
             commands::hide_main_window,
             commands::show_main_window,
             commands::quit_app,
+            commands::open_data_folder,
+            commands::export_all_sessions,
             overlay::overlay_show,
             overlay::overlay_hide,
             overlay::overlay_toggle,

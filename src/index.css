@@ -12,6 +12,13 @@
   --text-muted: #555555;
   --accent: #16a34a;
   --accent-subtle: #16a34a22;
+  /* V-H1: accent ramp used by the stats heatmap. Alpha-suffixed hex
+     works because SVG `fill` accepts 8-char hex natively. Changing the
+     base accent hue is a one-line edit; these derived tokens follow
+     automatically once the hex is updated in lockstep. */
+  --accent-25: #16a34a40;
+  --accent-45: #16a34a70;
+  --accent-65: #16a34aa0;
   --success: #4ade80;
   --warning: #fbbf24;
   --danger: #ef4444;

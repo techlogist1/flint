@@ -232,7 +232,9 @@ export function SettingsPanel({
 
           <Section title="Data">
             <ReadOnlyRow label="Data directory" value={flintDir} mono />
+            <OpenDataFolderRow />
             <RebuildCacheRow />
+            <ExportSessionsRow />
           </Section>
         </div>
       </div>
@@ -396,6 +398,89 @@ function RebuildCacheRow() {
         )}
         {error && (
           <span className="text-[11px] text-[var(--danger)]">{error}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// PR-H3: reveals the ~/.flint/ data directory in the system file explorer
+// so users can inspect session files, plugin data, and config.toml
+// without leaving the app.
+function OpenDataFolderRow() {
+  const [error, setError] = useState<string | null>(null);
+
+  const open = async () => {
+    setError(null);
+    try {
+      await invoke("open_data_folder");
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-[200px_1fr] items-center gap-4">
+      <label className="text-xs text-[var(--text-secondary)]">Data folder</label>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={open}
+          className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:text-[var(--text-primary)]"
+        >
+          Open data folder
+        </button>
+        {error && (
+          <span className="text-[11px] text-[var(--danger)]">{error}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// PR-H3: exports every JSON session file into a single combined JSON
+// array under ~/.flint/exports/. Shows the absolute path on success so
+// the user can open it from "Open data folder" above.
+function ExportSessionsRow() {
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const exportAll = async () => {
+    setPending(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const path = await invoke<string>("export_all_sessions");
+      setMessage(`Exported to ${path}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-[200px_1fr] items-start gap-4">
+      <label className="mt-1 text-xs text-[var(--text-secondary)]">
+        Export sessions
+      </label>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={exportAll}
+            disabled={pending}
+            className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-1 text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:text-[var(--text-primary)] disabled:opacity-50"
+          >
+            {pending ? "Exporting…" : "Export all sessions"}
+          </button>
+          {error && (
+            <span className="text-[11px] text-[var(--danger)]">{error}</span>
+          )}
+        </div>
+        {message && (
+          <span className="break-all font-mono text-[10px] text-[var(--success)]">
+            {message}
+          </span>
         )}
       </div>
     </div>

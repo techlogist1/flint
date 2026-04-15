@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bar,
@@ -21,8 +21,27 @@ import { StatsHeatmap } from "./stats-heatmap";
 
 type StatsTab = "today" | "week" | "month" | "map";
 
-const ACCENT = "#16a34a";
-const MUTED = "#555555";
+// V-H1: resolve design-token CSS vars into concrete hex strings at runtime
+// so Recharts (which takes plain color strings, not CSS vars) renders in
+// lockstep with the rest of the app. A single accent change in index.css
+// now flows into every chart — no more drift between the Tailwind layer
+// and the Recharts literals.
+function resolveChartColors() {
+  const root = document.documentElement;
+  const read = (name: string, fallback: string) =>
+    getComputedStyle(root).getPropertyValue(name).trim() || fallback;
+  return {
+    accent: read("--accent", "#16a34a"),
+    muted: read("--text-muted", "#555555"),
+    border: read("--border", "#333333"),
+    bgPrimary: read("--bg-primary", "#1e1e1e"),
+    bgElevated: read("--bg-elevated", "#2d2d2d"),
+    textPrimary: read("--text-primary", "#e0e0e0"),
+    textSecondary: read("--text-secondary", "#888888"),
+  };
+}
+
+type ChartColors = ReturnType<typeof resolveChartColors>;
 
 export function StatsDashboard() {
   const [tab, setTab] = useState<StatsTab>("today");
@@ -32,6 +51,10 @@ export function StatsDashboard() {
   const [heatmap, setHeatmap] = useState<HeatmapCell[] | null>(null);
   const [lifetime, setLifetime] = useState<LifetimeTotals | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // V-H1: resolved once on mount. Design tokens do not change at runtime
+  // (dark-theme only, no user theming in v1), so re-resolving on every
+  // render is wasted work.
+  const colors = useMemo(() => resolveChartColors(), []);
 
   const load = useCallback(async () => {
     try {
@@ -93,8 +116,12 @@ export function StatsDashboard() {
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {error && <p className="text-[11px] text-[var(--danger)]">{error}</p>}
         {tab === "today" && <TodayView stats={today} />}
-        {tab === "week" && <RangeView stats={week} scope="week" />}
-        {tab === "month" && <RangeView stats={month} scope="month" />}
+        {tab === "week" && (
+          <RangeView stats={week} scope="week" colors={colors} />
+        )}
+        {tab === "month" && (
+          <RangeView stats={month} scope="month" colors={colors} />
+        )}
         {tab === "map" && <HeatmapView cells={heatmap} lifetime={lifetime} />}
       </div>
     </div>
@@ -156,9 +183,11 @@ function TodayView({ stats }: { stats: TodayStats | null }) {
 function RangeView({
   stats,
   scope,
+  colors,
 }: {
   stats: RangeStats | null;
   scope: "week" | "month";
+  colors: ChartColors;
 }) {
   if (!stats) {
     return <p className="text-[11px] text-[var(--text-muted)]">Loading…</p>;
@@ -198,7 +227,7 @@ function RangeView({
         <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
           Daily focus
         </div>
-        <DailyBarChart buckets={stats.daily} scope={scope} />
+        <DailyBarChart buckets={stats.daily} scope={scope} colors={colors} />
       </div>
 
       <div className="space-y-1">
@@ -291,9 +320,11 @@ function formatBestDay(date: string): string {
 function DailyBarChart({
   buckets,
   scope,
+  colors,
 }: {
   buckets: RangeStats["daily"];
   scope: "week" | "month";
+  colors: ChartColors;
 }) {
   if (buckets.length === 0) {
     return (
@@ -313,43 +344,43 @@ function DailyBarChart({
         <BarChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <CartesianGrid
             strokeDasharray="3 3"
-            stroke="#333333"
+            stroke={colors.border}
             vertical={false}
           />
           <XAxis
             dataKey="label"
-            stroke="#555555"
+            stroke={colors.muted}
             fontSize={9}
             tickLine={false}
-            axisLine={{ stroke: "#333333" }}
+            axisLine={{ stroke: colors.border }}
             interval="preserveStartEnd"
           />
           <YAxis
-            stroke="#555555"
+            stroke={colors.muted}
             fontSize={9}
             tickLine={false}
-            axisLine={{ stroke: "#333333" }}
+            axisLine={{ stroke: colors.border }}
             width={24}
             tickFormatter={(v) => (v >= 60 ? `${Math.round(v / 60)}h` : `${v}m`)}
           />
           <Tooltip
-            cursor={{ fill: "#2d2d2d" }}
+            cursor={{ fill: colors.bgElevated }}
             contentStyle={{
-              background: "#1e1e1e",
-              border: "1px solid #333333",
+              background: colors.bgPrimary,
+              border: `1px solid ${colors.border}`,
               borderRadius: 4,
               fontSize: 11,
-              color: "#e0e0e0",
+              color: colors.textPrimary,
               padding: "4px 8px",
             }}
-            labelStyle={{ color: "#888888" }}
+            labelStyle={{ color: colors.textSecondary }}
             formatter={(value) => [`${Number(value) || 0} min`, "Focus"]}
           />
           <Bar dataKey="minutes" radius={[2, 2, 0, 0]}>
             {data.map((d, i) => (
               <Cell
                 key={i}
-                fill={d.minutes > 0 ? ACCENT : MUTED}
+                fill={d.minutes > 0 ? colors.accent : colors.muted}
                 fillOpacity={d.minutes > 0 ? 1 : 0.3}
               />
             ))}
