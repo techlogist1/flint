@@ -401,7 +401,7 @@ mod tests {
         s.status = TimerStatus::Running;
         s.elapsed_sec = 42;
         s.mode = "pomodoro".into();
-        s.tags = vec!["physics".into()];
+        s.tags = vec!["project".into()];
         s.questions_done = 3;
         s.current_interval = Some(Interval {
             interval_type: "focus".into(),
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(loaded.mode, "pomodoro");
         assert_eq!(loaded.status, "running");
         assert_eq!(loaded.questions_done, 3);
-        assert_eq!(loaded.tags, vec!["physics".to_string()]);
+        assert_eq!(loaded.tags, vec!["project".to_string()]);
         assert!(loaded.current_interval.is_some());
         delete_recovery().ok();
     }

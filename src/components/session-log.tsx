@@ -16,14 +16,22 @@ type DateRange = "all" | "today" | "week" | "month";
 interface SessionLogProps {
   activeSessionId: string | null;
   onOpenSession: (id: string) => void;
+  /** Called after a session has been successfully deleted. Use this to
+   *  close any detail view still pointing at the removed session. */
+  onSessionDeleted?: (id: string) => void;
 }
 
-export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) {
+export function SessionLog({
+  activeSessionId,
+  onOpenSession,
+  onSessionDeleted,
+}: SessionLogProps) {
   const [sessions, setSessions] = useState<CachedSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [range, setRange] = useState<DateRange>("all");
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const load = useCallback(async () => {
@@ -102,6 +110,21 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
     [filtered, onOpenSession],
   );
 
+  const deleteSession = useCallback(
+    async (id: string) => {
+      try {
+        await invoke("delete_session", { id });
+        setConfirmId(null);
+        onSessionDeleted?.(id);
+        await load();
+      } catch (e) {
+        setError(String(e));
+        setConfirmId(null);
+      }
+    },
+    [load, onSessionDeleted],
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="space-y-2 border-b border-[var(--border)] px-3 pb-3 pt-3">
@@ -164,9 +187,13 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
                 active={s.id === activeSessionId}
                 focused={idx === focusedIndex}
                 tabIndex={idx === focusedIndex ? 0 : -1}
+                confirming={confirmId === s.id}
                 onClick={() => onOpenSession(s.id)}
                 onFocus={() => setFocusedIndex(idx)}
                 onKeyDown={(e) => onRowKeyDown(e, idx)}
+                onRequestDelete={() => setConfirmId(s.id)}
+                onConfirmDelete={() => void deleteSession(s.id)}
+                onCancelDelete={() => setConfirmId(null)}
               />
             </li>
           ))}
@@ -207,14 +234,30 @@ interface SessionRowProps {
   active: boolean;
   focused: boolean;
   tabIndex: number;
+  confirming: boolean;
   onClick: () => void;
   onFocus: () => void;
   onKeyDown: (e: ReactKeyboardEvent<HTMLButtonElement>) => void;
+  onRequestDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
 }
 
 const SessionRow = forwardRef<HTMLButtonElement, SessionRowProps>(
   function SessionRow(
-    { session, active, focused, tabIndex, onClick, onFocus, onKeyDown },
+    {
+      session,
+      active,
+      focused,
+      tabIndex,
+      confirming,
+      onClick,
+      onFocus,
+      onKeyDown,
+      onRequestDelete,
+      onConfirmDelete,
+      onCancelDelete,
+    },
     ref,
   ) {
     const timeStr = formatTimeOfDay(session.started_at);
@@ -229,68 +272,112 @@ const SessionRow = forwardRef<HTMLButtonElement, SessionRowProps>(
         ? "border-l-[2px] border-l-[var(--text-secondary)]"
         : "border-l-[2px] border-l-transparent";
 
-    return (
-      <button
-        ref={ref}
-        tabIndex={tabIndex}
-        onClick={onClick}
-        onFocus={onFocus}
-        onKeyDown={onKeyDown}
-        className={`${leftBorder} flex w-full items-center gap-2 py-[6px] pl-[10px] pr-3 text-left text-[11px] leading-tight outline-none transition-colors duration-100 ease-out hover:bg-[var(--bg-elevated)]`}
-      >
-        <span
-          className="tabular-nums"
-          style={{ color: "var(--text-muted)", minWidth: 38 }}
+    if (confirming) {
+      return (
+        <div
+          className={`${leftBorder} flex w-full items-center gap-3 py-[6px] pl-[10px] pr-3 text-[10px] uppercase tracking-[0.14em]`}
         >
-          {timeStr}
-        </span>
-        <span
-          className="tabular-nums"
-          style={{ color: "var(--text-primary)", minWidth: 44 }}
-        >
-          {duration}
-        </span>
-        <span
-          className="uppercase"
-          style={{
-            color: "var(--text-secondary)",
-            letterSpacing: "0.1em",
-            fontSize: 10,
-            minWidth: 26,
-          }}
-        >
-          {modeShort}
-        </span>
-        {session.questions_done > 0 && (
           <span
             className="tabular-nums"
-            style={{ color: "var(--text-muted)", fontSize: 10 }}
+            style={{ color: "var(--text-muted)", minWidth: 38 }}
           >
-            q{session.questions_done}
+            {timeStr}
           </span>
-        )}
-        <span
-          className="ml-auto truncate text-right"
-          style={{
-            color: primaryTag ? "var(--accent)" : "var(--text-muted)",
-            maxWidth: "50%",
-          }}
+          <span className="text-[var(--status-error)]">DELETE?</span>
+          <button
+            onClick={onConfirmDelete}
+            className="text-[var(--status-error)] hover:text-[var(--text-bright)]"
+          >
+            [YES]
+          </button>
+          <button
+            onClick={onCancelDelete}
+            className="text-[var(--text-muted)] hover:text-[var(--text-bright)]"
+          >
+            [NO]
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className={`${leftBorder} group relative flex items-stretch transition-colors duration-100 ease-out hover:bg-[var(--bg-elevated)]`}
+      >
+        <button
+          ref={ref}
+          tabIndex={tabIndex}
+          onClick={onClick}
+          onFocus={onFocus}
+          onKeyDown={onKeyDown}
+          className="flex min-w-0 flex-1 items-center gap-2 py-[6px] pl-[10px] pr-8 text-left text-[11px] leading-tight outline-none"
         >
-          {primaryTag
-            ? session.tags.length > 1
-              ? `[${primaryTag}]+${session.tags.length - 1}`
-              : `[${primaryTag}]`
-            : "—"}
-        </span>
-        {!session.completed && (
           <span
-            className="text-[9px] uppercase tracking-wider"
-            style={{ color: "var(--status-error)" }}
+            className="tabular-nums"
+            style={{ color: "var(--text-muted)", minWidth: 38 }}
           >
-            ×
+            {timeStr}
           </span>
-        )}
-      </button>
+          <span
+            className="tabular-nums"
+            style={{ color: "var(--text-primary)", minWidth: 44 }}
+          >
+            {duration}
+          </span>
+          <span
+            className="uppercase"
+            style={{
+              color: "var(--text-secondary)",
+              letterSpacing: "0.1em",
+              fontSize: 10,
+              minWidth: 26,
+            }}
+          >
+            {modeShort}
+          </span>
+          {session.questions_done > 0 && (
+            <span
+              className="tabular-nums"
+              style={{ color: "var(--text-muted)", fontSize: 10 }}
+            >
+              q{session.questions_done}
+            </span>
+          )}
+          <span
+            className="ml-auto truncate text-right"
+            style={{
+              color: primaryTag ? "var(--accent)" : "var(--text-muted)",
+              maxWidth: "50%",
+            }}
+          >
+            {primaryTag
+              ? session.tags.length > 1
+                ? `[${primaryTag}]+${session.tags.length - 1}`
+                : `[${primaryTag}]`
+              : "—"}
+          </span>
+          {!session.completed && (
+            <span
+              className="text-[9px] uppercase tracking-wider"
+              style={{ color: "var(--status-error)" }}
+            >
+              ×
+            </span>
+          )}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRequestDelete();
+          }}
+          title="Delete session"
+          aria-label="Delete session"
+          tabIndex={-1}
+          className="absolute right-[6px] top-1/2 -translate-y-1/2 px-[4px] text-[12px] leading-none text-[var(--text-muted)] opacity-0 transition-opacity duration-100 ease-out hover:text-[var(--status-error)] group-hover:opacity-100 focus:opacity-100"
+        >
+          ×
+        </button>
+      </div>
     );
   },
 );

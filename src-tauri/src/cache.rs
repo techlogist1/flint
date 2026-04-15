@@ -320,6 +320,15 @@ pub fn upsert_from_file(
     Ok(())
 }
 
+/// Remove a single session row from the SQLite cache. The source-of-truth
+/// session JSON file must be deleted by the caller; this only touches the
+/// rebuildable read cache.
+pub fn delete_by_id(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedSession> {
     let tags_raw: String = row.get("tags")?;
     let tags: Vec<String> = serde_json::from_str(&tags_raw).unwrap_or_default();

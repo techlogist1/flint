@@ -1017,6 +1017,90 @@ pub fn export_all_sessions() -> Result<String, String> {
     Ok(out_path.display().to_string())
 }
 
+/// Validate a session id for path-safety before we use it to touch a file.
+/// Rejects empty strings, anything containing `/`, `\`, or `..`, and any
+/// character outside the ASCII alphanum / `_` / `-` class. Extracted from
+/// `delete_session` so we can unit-test the predicate without spinning up
+/// Tauri state.
+fn validate_session_id(id: &str) -> Result<(), String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err("session id must not be empty".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+        return Err(format!("invalid session id: {}", trimmed));
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!("invalid session id: {}", trimmed));
+    }
+    Ok(())
+}
+
+/// Delete a single session: removes the JSON source-of-truth file from
+/// `~/.flint/sessions/` and drops the matching row from the SQLite cache.
+/// The frontend passes the session `id` (the short hex token embedded in
+/// the filename and stored as `.id` inside the JSON). We validate the id
+/// is a plain ascii-alphanum / `_` / `-` token with no path separators or
+/// `..` sequences so a compromised plugin cannot use this command to escape
+/// the sessions directory and delete arbitrary files.
+#[tauri::command]
+pub fn delete_session(
+    id: String,
+    cache_state: State<'_, CacheState>,
+) -> Result<(), String> {
+    validate_session_id(&id)?;
+    let trimmed = id.trim();
+
+    let sessions_dir = storage::flint_dir()?.join("sessions");
+    let entries = std::fs::read_dir(&sessions_dir)
+        .map_err(|e| format!("read {}: {}", sessions_dir.display(), e))?;
+
+    let mut target: Option<std::path::PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        if value.get("id").and_then(|v| v.as_str()) == Some(trimmed) {
+            target = Some(path);
+            break;
+        }
+    }
+
+    let Some(path) = target else {
+        return Err(format!("session {} not found", trimmed));
+    };
+
+    // Canonicalise both sides and verify the match stays inside sessions_dir
+    // — a belt-and-braces check against symlink shenanigans.
+    let canon_file = std::fs::canonicalize(&path)
+        .map_err(|e| format!("canonicalize {}: {}", path.display(), e))?;
+    let canon_dir = std::fs::canonicalize(&sessions_dir)
+        .map_err(|e| format!("canonicalize {}: {}", sessions_dir.display(), e))?;
+    if !canon_file.starts_with(&canon_dir) {
+        return Err(format!("session {} is outside sessions dir", trimmed));
+    }
+
+    std::fs::remove_file(&path)
+        .map_err(|e| format!("delete session {}: {}", trimmed, e))?;
+
+    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(conn) = guard.as_ref() {
+        cache::delete_by_id(conn, trimmed)?;
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // PRESET CRUD
 // ============================================================================
@@ -1091,5 +1175,25 @@ mod tests {
         let mut v = json!({ "pomodoro": { "focus_min": 25 } });
         let result = set_path(&mut v, "unknown.key", json!(1));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_session_id_accepts_hex_tokens() {
+        assert!(validate_session_id("deadbeef").is_ok());
+        assert!(validate_session_id("a1b2c3d4").is_ok());
+        assert!(validate_session_id("abc-123_xyz").is_ok());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_path_traversal() {
+        assert!(validate_session_id("").is_err());
+        assert!(validate_session_id("   ").is_err());
+        assert!(validate_session_id("../etc/passwd").is_err());
+        assert!(validate_session_id("..").is_err());
+        assert!(validate_session_id("foo/bar").is_err());
+        assert!(validate_session_id("foo\\bar").is_err());
+        assert!(validate_session_id("foo..bar").is_err());
+        assert!(validate_session_id("foo bar").is_err());
+        assert!(validate_session_id("foo.json").is_err());
     }
 }

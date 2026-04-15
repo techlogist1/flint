@@ -9,12 +9,23 @@ import { formatTime } from "../lib/format";
 interface SessionDetailProps {
   sessionId: string;
   onClose: () => void;
+  /** Optional delete callback — wires the header DELETE control. */
+  onDelete?: () => void | Promise<void>;
 }
 
-export function SessionDetailPanel({ sessionId, onClose }: SessionDetailProps) {
+export function SessionDetailPanel({
+  sessionId,
+  onClose,
+  onDelete,
+}: SessionDetailProps) {
   const [detail, setDetail] = useState<SessionDetailType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  useEffect(() => {
+    setConfirmDelete(false);
+  }, [sessionId]);
 
   useEffect(() => {
     let canceled = false;
@@ -44,13 +55,44 @@ export function SessionDetailPanel({ sessionId, onClose }: SessionDetailProps) {
         <h2 className="text-[13px] uppercase tracking-[0.18em] text-[var(--text-bright)]">
           SESSION
         </h2>
-        <button
-          onClick={onClose}
-          className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)] transition-colors duration-100 ease-out hover:text-[var(--text-bright)]"
-          title="Close (Esc)"
-        >
-          [ESC] CLOSE
-        </button>
+        <div className="flex items-center gap-4">
+          {onDelete && !confirmDelete && (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)] transition-colors duration-100 ease-out hover:text-[var(--status-error)]"
+              title="Delete this session"
+            >
+              [DELETE]
+            </button>
+          )}
+          {onDelete && confirmDelete && (
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em]">
+              <span className="text-[var(--status-error)]">DELETE?</span>
+              <button
+                onClick={() => {
+                  setConfirmDelete(false);
+                  void onDelete();
+                }}
+                className="text-[var(--status-error)] hover:text-[var(--text-bright)]"
+              >
+                [YES]
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="text-[var(--text-muted)] hover:text-[var(--text-bright)]"
+              >
+                [NO]
+              </button>
+            </div>
+          )}
+          <button
+            onClick={onClose}
+            className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)] transition-colors duration-100 ease-out hover:text-[var(--text-bright)]"
+            title="Close (Esc)"
+          >
+            [ESC] CLOSE
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">

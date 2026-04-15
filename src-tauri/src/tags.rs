@@ -94,14 +94,14 @@ mod tests {
         insert_many(
             &idx,
             &[
-                "physics".into(),
-                "MATH".into(),
-                "  chemistry  ".into(),
-                "physics".into(),
+                "project".into(),
+                "DEEP-WORK".into(),
+                "  creative  ".into(),
+                "project".into(),
                 "".into(),
             ],
         );
         let snap = snapshot(&idx);
-        assert_eq!(snap, vec!["chemistry", "MATH", "physics"]);
+        assert_eq!(snap, vec!["creative", "DEEP-WORK", "project"]);
     }
 }

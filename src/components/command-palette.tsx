@@ -103,19 +103,31 @@ function CommandPaletteInner({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
       style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 60,
         backgroundColor: "rgba(5,5,5,0.7)",
-        paddingTop: "14vh",
       }}
     >
       <div
-        className="w-full max-w-2xl border border-[var(--border-focus)] bg-[var(--bg-primary)]"
-        style={{ minHeight: 56 }}
         onMouseDown={(e) => e.stopPropagation()}
+        className="border border-[var(--border-focus)] bg-[var(--bg-primary)]"
+        style={{
+          position: "fixed",
+          top: "20vh",
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: "min(600px, 90vw)",
+          minHeight: 56,
+          zIndex: 61,
+        }}
       >
         <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
           <span className="text-[12px] text-[var(--accent)]">&gt;</span>

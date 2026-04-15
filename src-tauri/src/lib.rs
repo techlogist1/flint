@@ -168,7 +168,7 @@ mod tests {
             elapsed_sec,
             mode: "pomodoro".into(),
             status: status.into(),
-            tags: vec!["physics".into()],
+            tags: vec!["project".into()],
             questions_done: 0,
             intervals: Vec::new(),
             current_interval: Some(Interval {
@@ -419,6 +419,7 @@ pub fn run() {
             commands::stats_heatmap,
             commands::stats_lifetime,
             commands::rebuild_cache,
+            commands::delete_session,
             commands::get_app_state,
             commands::mark_first_close_shown,
             commands::hide_main_window,

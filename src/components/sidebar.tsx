@@ -15,6 +15,7 @@ interface SidebarProps {
   width: number;
   activeSessionId: string | null;
   onOpenSession: (id: string) => void;
+  onSessionDeleted?: (id: string) => void;
   onOpenSettings: () => void;
   onResize?: (width: number) => void;
 }
@@ -27,6 +28,7 @@ export function Sidebar({
   width,
   activeSessionId,
   onOpenSession,
+  onSessionDeleted,
   onOpenSettings,
   onResize,
 }: SidebarProps) {
@@ -141,6 +143,7 @@ export function Sidebar({
               <SessionLog
                 activeSessionId={activeSessionId}
                 onOpenSession={onOpenSession}
+                onSessionDeleted={onSessionDeleted}
               />
             </div>
           </div>

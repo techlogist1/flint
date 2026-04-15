@@ -22,6 +22,8 @@ interface TimerDisplayProps {
   onTagCancel: () => void;
   onTagsChange: (tags: string[]) => void;
   onLoadPreset: (preset: Preset) => void;
+  onEditPreset: (preset: Preset) => void;
+  onDeletePreset: (preset: Preset) => void;
 }
 
 export function TimerDisplay({
@@ -37,6 +39,8 @@ export function TimerDisplay({
   onTagCancel,
   onTagsChange,
   onLoadPreset,
+  onEditPreset,
+  onDeletePreset,
 }: TimerDisplayProps) {
   const timerModes = useTimerModes();
   const labelFor = useMemo(() => {
@@ -129,7 +133,12 @@ export function TimerDisplay({
             running, tags are read-only pills (unless Ctrl+T opened the
             legacy mid-session TagInput). */}
         {isIdle && !tagInputOpen && (
-          <QuickStartBar presets={presets} onLoad={onLoadPreset} />
+          <QuickStartBar
+            presets={presets}
+            onLoad={onLoadPreset}
+            onEdit={onEditPreset}
+            onDelete={onDeletePreset}
+          />
         )}
 
         {isIdle && !tagInputOpen && (

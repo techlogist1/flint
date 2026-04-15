@@ -56,6 +56,7 @@ function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetFormOpen, setPresetFormOpen] = useState(false);
+  const [editingPreset, setEditingPreset] = useState<Preset | null>(null);
 
   // Refs that mirror ticking/mutable values, so the global keyboard handler
   // can read the latest values without re-registering every time `meta`
@@ -78,6 +79,8 @@ function AppShell() {
   presetsRef.current = presets;
   const viewRef = useRef<View>(view);
   viewRef.current = view;
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
 
   const hasTimerMode = useCallback(
     (id: string) => timerModes.some((m) => m.id === id),
@@ -95,6 +98,27 @@ function AppShell() {
     setActiveSessionId(null);
     setView("timer");
   }, []);
+
+  const onSessionDeletedFromLog = useCallback(
+    (id: string) => {
+      if (activeSessionIdRef.current === id) {
+        closeSessionDetail();
+      }
+    },
+    [closeSessionDetail],
+  );
+
+  const deleteActiveSession = useCallback(async () => {
+    const id = activeSessionIdRef.current;
+    if (!id) return;
+    try {
+      await invoke("delete_session", { id });
+      window.dispatchEvent(new CustomEvent("flint:plugin:sessions:refresh"));
+      closeSessionDetail();
+    } catch (e) {
+      console.error("delete_session failed", e);
+    }
+  }, [closeSessionDetail]);
 
   // Load config + flint dir once
   useEffect(() => {
@@ -265,6 +289,28 @@ function AppShell() {
     }
   }, [runBeforeHooks]);
   startSessionRef.current = startSession;
+
+  const openCreatePreset = useCallback(() => {
+    setEditingPreset(null);
+    setPresetFormOpen(true);
+  }, []);
+
+  const openEditPreset = useCallback((preset: Preset) => {
+    setEditingPreset(preset);
+    setPresetFormOpen(true);
+  }, []);
+
+  const deletePreset = useCallback(
+    async (preset: Preset) => {
+      try {
+        await invoke("delete_preset", { id: preset.id });
+        await refreshPresets();
+      } catch (e) {
+        console.error("delete_preset failed", e);
+      }
+    },
+    [refreshPresets],
+  );
 
   /** Load a preset: fire before:preset-load, apply temporary config
    *  overrides for this session, set tags, then start the session via the
@@ -512,7 +558,7 @@ function AppShell() {
         icon: "✦",
         category: "preset",
         callback: () => {
-          setPresetFormOpen(true);
+          openCreatePreset();
         },
       }),
       registerCoreCommand({
@@ -539,6 +585,16 @@ function AppShell() {
         },
       }),
       registerCoreCommand({
+        id: "core:delete-selected-session",
+        name: "Delete open session",
+        icon: "×",
+        category: "session",
+        callback: () => {
+          if (viewRef.current !== "session-detail") return;
+          void deleteActiveSession();
+        },
+      }),
+      registerCoreCommand({
         id: "core:quit-app",
         name: "Quit Flint",
         icon: "×",
@@ -561,7 +617,13 @@ function AppShell() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerCoreCommand, startSession, dispatchAfterHooks]);
+  }, [
+    registerCoreCommand,
+    startSession,
+    dispatchAfterHooks,
+    openCreatePreset,
+    deleteActiveSession,
+  ]);
 
   // Per-mode "switch to <plugin>" commands. Re-registered whenever the
   // enabled timer-mode set changes.
@@ -587,8 +649,10 @@ function AppShell() {
     };
   }, [timerModes, registerCoreCommand]);
 
-  // Per-preset "start <preset>" commands. Re-registered whenever the preset
-  // list changes so saved presets are instantly discoverable via Ctrl+P.
+  // Per-preset commands. Re-registered whenever the preset list changes so
+  // saved presets are instantly discoverable via Ctrl+P. Each preset yields
+  // three commands: start, edit, and delete. When a preset is removed from
+  // the list, its commands are deregistered automatically via cleanup.
   useEffect(() => {
     const unregs: Array<() => void> = [];
     for (const preset of presets) {
@@ -602,12 +666,30 @@ function AppShell() {
             void loadPreset(preset);
           },
         }),
+        registerCoreCommand({
+          id: `core:edit-preset:${preset.id}`,
+          name: `Edit preset: ${preset.name}`,
+          icon: "✎",
+          category: "preset",
+          callback: () => {
+            openEditPreset(preset);
+          },
+        }),
+        registerCoreCommand({
+          id: `core:delete-preset:${preset.id}`,
+          name: `Delete preset: ${preset.name}`,
+          icon: "×",
+          category: "preset",
+          callback: () => {
+            void deletePreset(preset);
+          },
+        }),
       );
     }
     return () => {
       for (const u of unregs) u();
     };
-  }, [presets, registerCoreCommand, loadPreset]);
+  }, [presets, registerCoreCommand, loadPreset, openEditPreset, deletePreset]);
 
   // Global keyboard handler. Reads the latest `meta` via metaRef so the
   // effect only re-registers when view/stopConfirmOpen/tagInputOpen change
@@ -844,6 +926,7 @@ function AppShell() {
         width={sidebarWidth}
         activeSessionId={activeSessionId}
         onOpenSession={openSession}
+        onSessionDeleted={onSessionDeletedFromLog}
         onOpenSettings={() => {
           setView("settings");
           setActiveSessionId(null);
@@ -884,6 +967,8 @@ function AppShell() {
                 onTagCancel={() => setTagInputOpen(false)}
                 onTagsChange={onTagsChange}
                 onLoadPreset={loadPreset}
+                onEditPreset={openEditPreset}
+                onDeletePreset={deletePreset}
               />
             </div>
             <StatusBar meta={meta} selectedMode={selectedMode} />
@@ -915,6 +1000,7 @@ function AppShell() {
             <SessionDetailPanel
               sessionId={activeSessionId}
               onClose={closeSessionDetail}
+              onDelete={deleteActiveSession}
             />
           </div>
         )}
@@ -926,13 +1012,19 @@ function AppShell() {
       />
       <PresetForm
         open={presetFormOpen}
-        onClose={() => setPresetFormOpen(false)}
+        onClose={() => {
+          setPresetFormOpen(false);
+          setEditingPreset(null);
+        }}
         onSaved={() => {
           refreshPresets();
         }}
-        config={config}
+        onDeleted={() => {
+          refreshPresets();
+        }}
         defaultMode={selectedMode}
         initialTags={stagedTags}
+        editing={editingPreset}
       />
     </div>
   );

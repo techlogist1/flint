@@ -92,8 +92,10 @@ Id format: `plugin_id:action_name` for plugin commands, `core:action_name` for c
 - `core:toggle-overlay`, `core:toggle-sidebar`, `core:open-settings`, `core:toggle-command-palette`
 - `core:open-tag-input`, `core:create-preset`, `core:manage-presets`
 - `core:export-sessions`, `core:open-data-folder`, `core:rebuild-cache`
+- `core:delete-selected-session` — deletes the session currently open in the detail view (no-op otherwise)
 - `core:quit-app`
 - `preset:load:{preset_id}` — auto-registered per preset, appears as `Start: {preset_name}`
+- `core:edit-preset:{preset_id}` / `core:delete-preset:{preset_id}` — one each per preset, re-registered when the preset list changes
 
 ### Palette behaviour
 
@@ -112,7 +114,7 @@ Saved session configurations. Presets are first-class citizens stored as plain J
 ```json
 {
   "id": "16-char-hex × 2",
-  "name": "BITSAT Grind",
+  "name": "Deep Work",
   "plugin_id": "pomodoro",
   "config_overrides": {
     "focus_duration": 45.0,
@@ -120,7 +122,7 @@ Saved session configurations. Presets are first-class citizens stored as plain J
     "cycles_before_long": 0,
     "auto_start_breaks": true
   },
-  "tags": ["physics", "math"],
+  "tags": ["project", "deep-work"],
   "pinned": true,
   "sort_order": 0,
   "created_at": "2026-04-15T10:00:00Z",
@@ -131,10 +133,16 @@ Saved session configurations. Presets are first-class citizens stored as plain J
 ### Tauri commands (`src-tauri/src/commands.rs` → `presets.rs`)
 
 - `list_presets() -> Vec<Preset>` — scans `~/.flint/presets/`, sorted pinned-first then `sort_order` then name.
-- `save_preset(preset: PresetDraft) -> Preset` — validates, writes atomically via `storage::write_atomic`. If `id` is supplied, updates in place preserving `created_at`/`last_used_at`.
+- `save_preset(preset: PresetDraft) -> Preset` — validates, writes atomically via `storage::write_atomic`. If `id` is supplied, updates in place preserving `created_at`/`last_used_at` (this is also the edit flow — the frontend passes the existing preset id to update in place).
 - `delete_preset(id: String) -> ()`
 - `load_preset(id: String) -> Preset`
 - `touch_preset(id: String) -> ()` — bumps `last_used_at` to now.
+
+### Preset form (create vs edit)
+
+`PresetForm` (`src/components/preset-form.tsx`) is used for both create and edit. When `editing` is null the form is a blank "NEW PRESET"; when `editing` is a `Preset`, fields are pre-populated and the header flips to "EDIT PRESET". Save always goes through `save_preset` — the distinguishing factor is whether `id` is supplied in the draft.
+
+The configuration section is **dynamic**: when a plugin is selected, the form reads `plugin.manifest.config_schema` and renders number / boolean / string / select fields for every entry (same renderer as the settings panel). The baseline is fetched live from `get_plugin_config(pluginId)` on mount / plugin change, so overriding "focus duration" starts at whatever the user's current config.toml has for that plugin. When editing, existing `config_overrides` are layered on top of the live baseline. On submit, the form filters overrides down to keys actually present in the active plugin's schema so switching plugins mid-edit does not leak stale keys into the preset JSON.
 
 ### Config override mechanics (`SessionOverridesState`)
 
@@ -162,6 +170,31 @@ Frontend `TagAutocomplete` (`src/components/tag-autocomplete.tsx`) calls `get_kn
 ## Quick-start bar
 
 Idle-view strip that renders up to 4 pinned presets (`src/components/quick-start-bar.tsx`). Number keys `1..4` map to these slots while the timer is idle, the view is `timer`, and no overlay (tag input / stop confirm / palette / preset form) is open. Bare keys — no modifier — so the muscle memory is instant. If no presets exist, the bar renders a muted hint pointing at `Ctrl+P → "create preset"`.
+
+## Deletion flows
+
+Flint's sandbox philosophy: users should be able to create *and* destroy freely. Every user-authored entity (sessions, presets) can be deleted from the UI, and every destructive action is gated by an inline `[YES] [NO]` confirmation — no modal dialogs.
+
+**Sessions** (`delete_session(id: String)` in `commands.rs`):
+- Scans `~/.flint/sessions/*.json`, locates the file whose JSON `.id` matches the argument, `fs::remove_file`s it, then drops the matching row via `cache::delete_by_id`. The session log listens for its own refresh event and re-renders.
+- **Path-traversal guard**: `validate_session_id` rejects empty strings, `/`, `\`, `..`, and any non-[A-Za-z0-9_-] character before we use the id to find a file. Tests live in `commands::tests`. After locating the candidate file we also canonicalise both it and `sessions_dir` and verify the match stays under `sessions_dir` as a belt-and-braces check against symlink shenanigans.
+- UI surfaces: hover × icon on each session log row (inline confirm replaces the row); `[DELETE]` control in the session detail header; `core:delete-selected-session` command which acts on whatever session is open in the detail view.
+
+**Presets** (`delete_preset(id: String)` — already existed pre-polish):
+- UI surfaces: hover `×` / `✎` on each quick-start bar tile (inline confirm replaces the tile); `[DELETE]` control in the preset form when editing; `core:edit-preset:{id}` / `core:delete-preset:{id}` commands auto-registered per preset.
+- Deleting a preset automatically deregisters its three per-preset commands on the next effect tick because the `useEffect` in `App.tsx` cleans up old registrations when the `presets` array changes.
+
+Per-session tag edits happen through `TagAutocomplete`, which already supports removing tags via the `×` pill or Backspace. Bulk tag deletion is intentionally not implemented — the tag index is derived from session files, so the right way to "remove" a tag is to edit the sessions that have it.
+
+## Context-aware hover actions
+
+Because the global right-click context menu is disabled, Flint uses an Obsidian-inspired hover-reveal pattern for item-level actions:
+- Each row / tile is a `group` with a primary clickable surface and trailing action icons (`×`, `✎`) that are `opacity-0` by default and `opacity-100 group-hover:`.
+- Actions are muted (`var(--text-muted)`) until hover so they never compete with the primary content. On hover they light up in accent or `--status-error` depending on intent.
+- Clicking a destructive action flips the row into an inline confirmation — `[YES] [NO]` text buttons replace the row content. Escape / clicking elsewhere cancels.
+- Action buttons use `tabIndex={-1}` so keyboard navigation still lands on the primary row button first, and arrow-key traversal stays predictable.
+
+Apply this pattern when adding any new per-item action. Never add a right-click menu — the terminal aesthetic assumes keyboard + hover-first interaction.
 
 ## Plugin API (TypeScript)
 
@@ -258,6 +291,7 @@ App shortcuts (also available as commands):
 - **Unicode icons only** — `●`, `‖`, `■`, `▶`, `×`, `«`, `»`, `⟳`, `✦`, `★`. No SVG icon libraries.
 - **Animation budget:** 150–200ms ease-out, state transitions only. No particles, no glows, no gradients. The palette and preset form are *instant* — terminal apps don't animate modals.
 - **Components:** use `FlintSelect` (not native `<select>`) for dropdowns, `FlintErrorBoundary` around anything that renders plugin-authored content or triggered-by-plugin UI.
+- **Modals are viewport-centered, not flex-centered.** Command palette and preset form use explicit `position: fixed; top: 14–20vh; left: 50%; transform: translateX(-50%)` so centering is relative to the viewport regardless of the sidebar / main-area flexbox. The backdrop is a separate `position: fixed; inset: 0` div with z-index 60+, and the dialog itself sits at z-index 61. Don't fall back to `flex items-start justify-center` — it subtly interacts with sidebar width under some layout modes.
 - **Overlay is off-limits** for sandbox features. The pill is fixed at 336×64 with its existing controls. Sandbox features live in the main window.
 
 ## Invariants that must NOT be broken
