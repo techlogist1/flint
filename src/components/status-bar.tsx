@@ -19,22 +19,45 @@ export function StatusBar({ meta, selectedMode }: StatusBarProps) {
   const label =
     timerModes.find((m) => m.id === mode)?.label ?? fallbackModeLabel(mode);
 
+  const intervalType = meta.current_interval?.type ?? null;
+  const dotColor =
+    meta.status === "paused"
+      ? "var(--status-paused)"
+      : meta.status === "running"
+        ? intervalType === "break"
+          ? "var(--status-break)"
+          : "var(--status-running)"
+        : "var(--status-idle)";
+
   return (
-    <div className="flex items-center justify-between border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-1.5 text-[11px] text-[var(--text-secondary)]">
+    <div
+      className="flex items-center justify-between border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]"
+      style={{ height: 24 }}
+    >
       <div className="flex items-center gap-3">
-        <span className="uppercase tracking-wider">{label}</span>
+        <span
+          className="inline-block h-[6px] w-[6px]"
+          style={{
+            background: dotColor,
+            borderRadius: 9999,
+            animation:
+              meta.status === "running"
+                ? "flint-blink 1.2s steps(2) infinite"
+                : "none",
+          }}
+        />
+        <span className="text-[var(--text-primary)]">{label.toUpperCase()}</span>
         <span className="text-[var(--text-muted)]">·</span>
-        <span className="capitalize">{meta.status}</span>
+        <span>{meta.status.toUpperCase()}</span>
         {pluginEntries.length > 0 && (
           <>
             <span className="text-[var(--text-muted)]">·</span>
             <div className="flex items-center gap-3">
               {pluginEntries.map((entry) => (
-                // S-C2: text-only render — React escapes the value, so a
-                // plugin can no longer inject HTML/script into the host.
                 <span
                   key={entry.pluginId}
-                  className="text-[var(--text-secondary)]"
+                  className="normal-case tracking-normal text-[var(--text-secondary)]"
+                  style={{ letterSpacing: "0.04em" }}
                   title={entry.pluginId}
                 >
                   {entry.text}
@@ -44,20 +67,24 @@ export function StatusBar({ meta, selectedMode }: StatusBarProps) {
           </>
         )}
       </div>
-      <div className="flex items-center gap-4 font-mono tabular-nums">
-        <span>Q: {meta.questions_done}</span>
+      <div className="flex items-center gap-4 tabular-nums">
+        <span>
+          <span className="text-[var(--text-muted)]">Q</span>{" "}
+          <span className="text-[var(--text-primary)]">
+            {meta.questions_done}
+          </span>
+        </span>
         <ElapsedText />
       </div>
     </div>
   );
 }
 
-/**
- * P-C2: split out the elapsed text so only this leaf re-renders on a tick.
- * The rest of StatusBar (mode/status/questions/plugin slots) only updates
- * on lifecycle events.
- */
 function ElapsedText() {
   const tick = useTickState();
-  return <span>{formatTime(tick.elapsed_sec)}</span>;
+  return (
+    <span className="text-[var(--text-primary)]">
+      {formatTime(tick.elapsed_sec)}
+    </span>
+  );
 }

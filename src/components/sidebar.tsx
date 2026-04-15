@@ -19,7 +19,7 @@ interface SidebarProps {
   onResize?: (width: number) => void;
 }
 
-const MIN_SIDEBAR_WIDTH = 160;
+const MIN_SIDEBAR_WIDTH = 180;
 const MAX_SIDEBAR_WIDTH = 360;
 
 export function Sidebar({
@@ -35,8 +35,6 @@ export function Sidebar({
   const displayWidth = localWidth ?? width;
 
   useEffect(() => {
-    // External width change (e.g. settings panel save) — clear local
-    // override once the prop catches up with our last drag end.
     if (localWidth !== null && Math.abs(width - localWidth) < 2) {
       setLocalWidth(null);
     }
@@ -76,7 +74,7 @@ export function Sidebar({
       if (seen.has(p.manifest.id)) continue;
       seen.add(p.manifest.id);
       out.push({
-        id: tabIdFor(p.manifest.id),
+        id: p.manifest.id,
         label: tabLabelFor(p.manifest.id, p.manifest.name),
         pluginId: p.manifest.id,
       });
@@ -110,18 +108,17 @@ export function Sidebar({
         borderRightWidth: visible ? 1 : 0,
         borderRightStyle: "solid",
         borderRightColor: "var(--border)",
-        transition:
-          "width 200ms ease-out, border-right-width 200ms ease-out",
       }}
     >
-      <div className="flex items-center gap-1 border-b border-[var(--border)] px-2 py-2">
+      {/* Tab switcher — plain text buttons with underline on active */}
+      <div className="flex items-center gap-4 border-b border-[var(--border)] px-3 pt-3 pb-0">
         {tabs.length === 0 ? (
-          <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-            No sidebar plugins
+          <span className="pb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+            NO PLUGINS
           </span>
         ) : (
           tabs.map((t) => (
-            <TabButton
+            <TextTab
               key={t.id}
               active={activeTab === t.id}
               label={t.label}
@@ -132,11 +129,6 @@ export function Sidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {/* P-H5: Session Log and Stats stay mounted whenever their plugin
-            is enabled; we toggle visibility via `display` so switching
-            tabs does not trigger a full unmount/remount (and the 5 stats
-            queries that come with it). Community plugins still render
-            the placeholder only when active. */}
         {tabs.some((t) => t.pluginId === "session-log") && (
           <div
             className={
@@ -156,9 +148,7 @@ export function Sidebar({
         {tabs.some((t) => t.pluginId === "stats") && (
           <div
             className={
-              active?.pluginId === "stats"
-                ? "flex h-full min-h-0"
-                : "hidden"
+              active?.pluginId === "stats" ? "flex h-full min-h-0" : "hidden"
             }
           >
             <div className="min-h-0 flex-1">
@@ -166,29 +156,27 @@ export function Sidebar({
             </div>
           </div>
         )}
-        {active && active.pluginId !== "session-log" && active.pluginId !== "stats" && (
-          <CommunityTabPlaceholder label={active.label} />
-        )}
+        {active &&
+          active.pluginId !== "session-log" &&
+          active.pluginId !== "stats" && (
+            <CommunityTabPlaceholder label={active.label} />
+          )}
         {!active && tabs.length === 0 && <DisabledHint />}
       </div>
 
-      <div className="border-t border-[var(--border)] p-2">
+      {/* Footer: settings row */}
+      <div className="border-t border-[var(--border)]">
         <button
           onClick={onOpenSettings}
-          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)]"
+          className="flex w-full items-center justify-between px-3 py-2 text-left text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)] transition-colors duration-100 ease-out hover:bg-[var(--bg-elevated)] hover:text-[var(--text-bright)]"
           title="Open settings (Ctrl+,)"
         >
-          <GearIcon />
-          <span>Settings</span>
-          <span className="ml-auto font-mono text-[10px] text-[var(--text-muted)]">
-            Ctrl+,
-          </span>
+          <span>SETTINGS</span>
+          <span className="text-[10px] text-[var(--text-muted)]">CTRL+,</span>
         </button>
       </div>
 
-      {/* D-H4: 4px invisible hit target on the right edge for edge-drag
-          resize. Sits above content (z-10) so it catches pointer events
-          even when overlapping scrollable regions. */}
+      {/* 4px invisible hit target for edge-drag resize */}
       {visible && (
         <div
           role="separator"
@@ -202,7 +190,7 @@ export function Sidebar({
   );
 }
 
-function TabButton({
+function TextTab({
   active,
   label,
   onClick,
@@ -214,13 +202,18 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`rounded px-3 py-1 text-xs transition-colors duration-150 ease-out ${
-        active
-          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)]"
-          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-      }`}
+      className="relative pb-2 text-[11px] uppercase tracking-[0.18em] transition-colors duration-100 ease-out"
+      style={{
+        color: active ? "var(--text-bright)" : "var(--text-secondary)",
+      }}
     >
       {label}
+      <span
+        className="absolute -bottom-[1px] left-0 right-0 h-[1px]"
+        style={{
+          background: active ? "var(--accent)" : "transparent",
+        }}
+      />
     </button>
   );
 }
@@ -228,8 +221,7 @@ function TabButton({
 function CommunityTabPlaceholder({ label }: { label: string }) {
   return (
     <div className="p-3 text-[11px] text-[var(--text-muted)]">
-      {label} is a community plugin. Its sidebar content will render when it
-      targets a built-in slot renderer.
+      {label.toLowerCase()} plugin has no built-in renderer.
     </div>
   );
 }
@@ -237,36 +229,13 @@ function CommunityTabPlaceholder({ label }: { label: string }) {
 function DisabledHint() {
   return (
     <div className="p-3 text-[11px] leading-relaxed text-[var(--text-muted)]">
-      Enable Session Log or Stats from Settings → Plugins to populate the
-      sidebar.
+      enable session-log or stats in settings → plugins.
     </div>
   );
 }
 
-function tabIdFor(pluginId: string): string {
-  return pluginId;
-}
-
 function tabLabelFor(pluginId: string, fallback: string): string {
-  if (pluginId === "session-log") return "Log";
-  if (pluginId === "stats") return "Stats";
-  return fallback;
-}
-
-function GearIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
+  if (pluginId === "session-log") return "LOG";
+  if (pluginId === "stats") return "STATS";
+  return fallback.toUpperCase();
 }

@@ -11,7 +11,7 @@ interface WeekColumn {
 }
 
 const CELL = 11;
-const GAP = 2;
+const GAP = 1;
 const LABEL_H = 14;
 
 // V-H1: single source of truth for the five-step heatmap ramp. Resolved
@@ -83,9 +83,10 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
             y={10}
             fontSize={9}
             fill={monthColor}
-            fontFamily="ui-monospace, monospace"
+            fontFamily="'JetBrains Mono', 'Fira Code', monospace"
+            style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}
           >
-            {label.text}
+            {label.text.toUpperCase()}
           </text>
         ))}
         <g transform={`translate(0, ${LABEL_H})`}>
@@ -98,8 +99,6 @@ export function StatsHeatmap({ cells }: StatsHeatmapProps) {
                   y={dayIdx * (CELL + GAP)}
                   width={CELL}
                   height={CELL}
-                  rx={2}
-                  ry={2}
                   fill={cellColorFromRamp(day, maxFocus, ramp)}
                 >
                   {day && (
@@ -178,16 +177,16 @@ function build(cells: HeatmapCell[]): {
 
 function Legend({ ramp }: { ramp: string[] }) {
   return (
-    <div className="flex items-center justify-end gap-1 text-[9px] text-[var(--text-muted)]">
-      <span>less</span>
+    <div className="flex items-center justify-end gap-[2px] pt-1 text-[9px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
+      <span className="mr-1">less</span>
       {ramp.map((c, idx) => (
         <span
           key={idx}
-          className="inline-block h-2 w-2 rounded-sm"
+          className="inline-block h-[8px] w-[8px]"
           style={{ backgroundColor: c }}
         />
       ))}
-      <span>more</span>
+      <span className="ml-1">more</span>
     </div>
   );
 }

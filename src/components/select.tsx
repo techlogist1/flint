@@ -125,31 +125,21 @@ export function FlintSelect({
         disabled={disabled}
         onClick={() => !disabled && setOpen((o) => !o)}
         onKeyDown={onKeyDown}
-        className="flex min-w-[140px] items-center justify-between gap-2 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 text-left text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out hover:border-[var(--text-muted)] focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex min-w-[140px] items-center justify-between gap-2 border border-[var(--border)] bg-[var(--bg-input)] px-2 py-[3px] text-left text-[11px] text-[var(--text-primary)] outline-none transition-colors duration-100 ease-out hover:border-[var(--border-focus)] focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="truncate">{label}</span>
-        <svg
-          width="10"
-          height="6"
-          viewBox="0 0 10 6"
-          className="shrink-0 text-[var(--text-secondary)]"
+        <span
+          className="shrink-0 text-[10px] text-[var(--text-muted)]"
           aria-hidden="true"
         >
-          <path
-            d="M1 1l4 4 4-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+          ▾
+        </span>
       </button>
       {open && (
         <ul
           id={listId}
           role="listbox"
-          className="absolute left-0 z-20 mt-1 min-w-full overflow-hidden rounded border border-[var(--border)] bg-[var(--bg-elevated)] py-1 shadow-lg"
+          className="absolute left-0 z-20 mt-1 min-w-full border border-[var(--border-focus)] bg-[var(--bg-elevated)] py-1"
           style={{ minWidth: "100%" }}
         >
           {options.map((opt, idx) => {
@@ -165,16 +155,15 @@ export function FlintSelect({
                   e.preventDefault();
                   commit(opt.value);
                 }}
-                className={`cursor-pointer px-3 py-1.5 text-xs transition-colors duration-75 ease-out ${
+                className={`cursor-pointer px-3 py-[4px] text-[11px] transition-colors duration-75 ease-out ${
                   isActive
-                    ? "bg-[var(--accent-subtle)] text-[var(--text-primary)]"
-                    : "text-[var(--text-secondary)]"
-                } ${
-                  isSelected && !isActive
-                    ? "text-[var(--text-primary)]"
-                    : ""
+                    ? "bg-[var(--accent-subtle)] text-[var(--text-bright)]"
+                    : isSelected
+                      ? "text-[var(--text-bright)]"
+                      : "text-[var(--text-secondary)]"
                 }`}
               >
+                {isSelected ? "▸ " : "  "}
                 {opt.label}
               </li>
             );

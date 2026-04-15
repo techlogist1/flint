@@ -11,12 +11,13 @@ use tauri::{
 
 pub const OVERLAY_LABEL: &str = "overlay";
 // The overlay Tauri window is created once at these dimensions and NEVER
-// resized. Expand/collapse is an inner-CSS animation only. Native window
-// resize on Windows was causing content reflow mid-morph and intermittent
-// Chrome_WidgetWin_0 unregister crashes on rapid toggle; keeping the window
-// fixed side-steps both.
-pub const WINDOW_W: f64 = 288.0;
-pub const WINDOW_H: f64 = 108.0;
+// resized. The visible pill inside is 320x52; the window adds a small
+// buffer so the rounded edges, border, and a possible drop-shadow never
+// clip. Native window resize was causing content reflow and intermittent
+// Chrome_WidgetWin_0 unregister crashes on rapid toggle, so the window
+// stays fixed and the inner DOM is the only thing that reacts to state.
+pub const WINDOW_W: f64 = 336.0;
+pub const WINDOW_H: f64 = 64.0;
 
 const OVERLAY_MARGIN: f64 = 20.0;
 const OVERLAY_TOP_OFFSET: f64 = 40.0;

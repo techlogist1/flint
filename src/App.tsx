@@ -414,7 +414,7 @@ function AppShell() {
   const sidebarWidth = config?.appearance.sidebar_width ?? 220;
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-[var(--bg-primary)] text-[var(--text-primary)]">
+    <div className="flex h-full w-full overflow-hidden bg-[var(--bg-void)] text-[var(--text-primary)]">
       <Sidebar
         visible={sidebarVisible}
         width={sidebarWidth}
@@ -505,18 +505,22 @@ function TopBar({
   onToggleSidebar: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
+    <div
+      className="flex items-center justify-between border-b border-[var(--border)] px-3"
+      style={{ height: 28 }}
+    >
       <button
         onClick={onToggleSidebar}
-        className="rounded px-2 py-1 text-xs text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:text-[var(--text-primary)]"
+        className="text-[14px] text-[var(--text-muted)] transition-colors duration-100 ease-out hover:text-[var(--text-bright)]"
         title="Toggle sidebar (Ctrl+B)"
+        style={{ lineHeight: 1 }}
       >
-        {sidebarVisible ? "⟨" : "⟩"}
+        {sidebarVisible ? "«" : "»"}
       </button>
-      <div className="font-mono text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
-        Flint
+      <div className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-muted)]">
+        FLINT
       </div>
-      <div className="w-8" />
+      <div className="w-6" />
     </div>
   );
 }

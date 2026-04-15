@@ -30,25 +30,28 @@ export function TagInput({
   };
 
   return (
-    <input
-      ref={ref}
-      data-flint-input="true"
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.stopPropagation();
-          commit();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          onCancel();
-        }
-      }}
-      onBlur={commit}
-      placeholder={placeholder ?? "tags, comma separated"}
-      className="w-80 max-w-full rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-center font-mono text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
-    />
+    <div className="flex items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+      <span className="text-[var(--accent)]">tags&gt;</span>
+      <input
+        ref={ref}
+        data-flint-input="true"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            onCancel();
+          }
+        }}
+        onBlur={commit}
+        placeholder={placeholder ?? "comma, separated"}
+        className="w-72 border border-[var(--border)] bg-[var(--bg-input)] px-2 py-[3px] text-[11px] text-[var(--text-bright)] placeholder:text-[var(--text-muted)] outline-none transition-colors duration-100 ease-out focus:border-[var(--accent)]"
+      />
+    </div>
   );
 }

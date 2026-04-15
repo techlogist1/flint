@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { Mode, Config } from "../lib/types";
 import { fallbackModeLabel } from "../lib/types";
 import { formatTime, modeDescription } from "../lib/format";
@@ -38,8 +38,8 @@ export function TimerDisplay({
 
   if (!meta) {
     return (
-      <div className="flex flex-1 items-center justify-center text-[var(--text-muted)]">
-        loading…
+      <div className="flex flex-1 items-center justify-center text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+        LOADING…
       </div>
     );
   }
@@ -50,29 +50,38 @@ export function TimerDisplay({
 
   const displayMode = (isIdle ? selectedMode : (meta.mode as Mode)) || "pomodoro";
 
-  const intervalLabel = meta.current_interval?.type
-    ? meta.current_interval.type.charAt(0).toUpperCase() +
-      meta.current_interval.type.slice(1)
-    : null;
+  const intervalType = meta.current_interval?.type ?? null;
+  const intervalLabel = intervalType ? intervalType.toUpperCase() : null;
+
+  const statusLabel = isIdle
+    ? "IDLE"
+    : isPaused
+      ? "PAUSED"
+      : isRunning
+        ? "ACTIVE"
+        : meta.status.toUpperCase();
 
   const hasTarget = meta.current_interval?.target_sec != null;
   const intervalTarget = meta.current_interval?.target_sec ?? null;
 
+  const modeLabelUp = labelFor(displayMode).toUpperCase();
+
+  const currentTags = isIdle ? stagedTags : meta.tags;
+
   return (
-    <div className="relative flex flex-1 flex-col items-center justify-center px-6">
-      <div className="flex flex-col items-center gap-4">
-        <div className="flex items-center gap-3">
-          <StatusDot status={meta.status} />
-          <span className="text-xs uppercase tracking-wider text-[var(--text-secondary)]">
-            {isIdle
-              ? labelFor(displayMode)
-              : `${labelFor(displayMode)}${
-                  intervalLabel ? ` · ${intervalLabel}` : ""
-                }`}
-            {isPaused && " · Paused"}
-          </span>
+    <div className="relative flex flex-1 flex-col items-center justify-center px-8">
+      <div className="flex w-full max-w-3xl flex-col items-center gap-6">
+        {/* Status line: dot · mode · interval · status */}
+        <div className="flex items-center gap-3 text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+          <StatusDot status={meta.status} intervalType={intervalType} />
+          <span>{modeLabelUp}</span>
+          <Sep />
+          <span>{intervalLabel ?? (isIdle ? "READY" : "—")}</span>
+          <Sep />
+          <span>{statusLabel}</span>
         </div>
 
+        {/* Hero: massive centered timer digits */}
         <TimerDigit
           isIdle={isIdle}
           hasTarget={hasTarget}
@@ -80,66 +89,67 @@ export function TimerDisplay({
           config={config}
         />
 
+        {/* Idle mode description */}
         {isIdle && (
-          <div className="text-sm text-[var(--text-secondary)]">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
             {modeDescription(
               displayMode,
               config?.pomodoro.focus_duration ?? 25,
               config?.core.countdown_default_min ?? 60,
-            )}
+            ).toUpperCase()}
           </div>
         )}
 
-        {hasTarget && !isIdle && intervalTarget != null && (
-          <div className="h-[3px] w-72 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
+        {/* 2px progress bar */}
+        <div className="h-[2px] w-full max-w-xl bg-[var(--border-subtle)]">
+          {hasTarget && !isIdle && intervalTarget != null ? (
             <ProgressBar target={intervalTarget} />
+          ) : (
+            <div className="h-full w-0" />
+          )}
+        </div>
+
+        {/* Question count — inline, only if > 0 */}
+        {!isIdle && meta.questions_done > 0 && (
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+            Q <span className="text-[var(--text-bright)]">{meta.questions_done}</span>
           </div>
         )}
 
-        {!isIdle && <QuestionsCount initial={meta.questions_done} />}
+        {/* Tags */}
+        {!tagInputOpen && currentTags.length > 0 && (
+          <div className="flex flex-wrap justify-center gap-2 text-[11px]">
+            {currentTags.map((t) => (
+              <span
+                key={t}
+                className="text-[var(--accent)]"
+                style={{ letterSpacing: "0.04em" }}
+              >
+                [{t}]
+              </span>
+            ))}
+          </div>
+        )}
 
-        {/* Tags display (idle shows staged, active shows meta.tags) */}
-        {!tagInputOpen &&
-          (isIdle ? stagedTags : meta.tags).length > 0 && (
-            <div className="flex flex-wrap justify-center gap-1.5">
-              {(isIdle ? stagedTags : meta.tags).map((t) => (
-                <span
-                  key={t}
-                  className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)]"
-                >
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
-
-        {/* Inline tag input */}
+        {/* Tag input */}
         {tagInputOpen && (
           <TagInput
-            initial={isIdle ? stagedTags : meta.tags}
+            initial={currentTags}
             onConfirm={onTagConfirm}
             onCancel={onTagCancel}
           />
         )}
 
-        {/* Idle hint */}
-        {isIdle && !tagInputOpen && !hintDismissed && (
-          <div className="mt-2 text-xs text-[var(--text-muted)]">
-            Press <Kbd>Space</Kbd> to start · <Kbd>Ctrl+T</Kbd> to add tags ·{" "}
-            <Kbd>Ctrl+1/2/3</Kbd> to switch mode
-          </div>
-        )}
-
-        {/* Running/paused hint */}
-        {!isIdle && !tagInputOpen && (
-          <div className="mt-2 text-xs text-[var(--text-muted)]">
-            <Kbd>Space</Kbd> {isRunning ? "pause" : "resume"} ·{" "}
-            <Kbd>Enter</Kbd> mark question · <Kbd>Esc</Kbd> stop
-          </div>
+        {/* Keyboard hints — muted text, switches to inline stop confirmation */}
+        {!tagInputOpen && (
+          <HintLine
+            isIdle={isIdle}
+            isRunning={isRunning}
+            stopConfirmOpen={stopConfirmOpen}
+            hintDismissed={hintDismissed}
+          />
         )}
       </div>
-
-      <StopConfirmToast open={stopConfirmOpen} />
     </div>
   );
 }
@@ -169,7 +179,16 @@ function TimerDigit({
     config,
   );
   return (
-    <div className="font-mono text-[96px] leading-none tracking-tight tabular-nums text-[var(--text-primary)]">
+    <div
+      className="tabular-nums"
+      style={{
+        fontSize: "clamp(48px, 12vw, 80px)",
+        fontWeight: 500,
+        lineHeight: 1,
+        letterSpacing: "-0.03em",
+        color: isIdle ? "var(--text-primary)" : "var(--text-bright)",
+      }}
+    >
       {displayTime}
     </div>
   );
@@ -183,7 +202,8 @@ function TimerDigit({
 function ProgressBar({ target }: { target: number }) {
   const tick = useTickState();
   const remaining = tick.interval_remaining ?? target;
-  const ratio = target > 0 ? Math.max(0, Math.min(1, (target - remaining) / target)) : 0;
+  const ratio =
+    target > 0 ? Math.max(0, Math.min(1, (target - remaining) / target)) : 0;
   return (
     <div
       className="h-full origin-left bg-[var(--accent)]"
@@ -197,89 +217,81 @@ function ProgressBar({ target }: { target: number }) {
   );
 }
 
-/**
- * Question counter is meta-driven (only changes on Enter), but the parent
- * `meta` object would re-render the whole TimerDisplay tree on a meta
- * change. Splitting it out keeps the conditional render local. The `initial`
- * prop only changes when meta does, which is exactly when we want this to
- * update.
- */
-function QuestionsCount({ initial }: { initial: number }) {
-  if (initial === 0) return null;
-  return (
-    <div className="font-mono text-sm text-[var(--text-secondary)]">
-      Q: {initial}
-    </div>
-  );
-}
-
-function StopConfirmToast({ open }: { open: boolean }) {
-  // Keep the bar mounted for the slide-out animation after `open` flips to
-  // false. `visible` drives the CSS transform; `mounted` controls presence in
-  // the tree.
-  const [mounted, setMounted] = useState(open);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      // Next frame so the transition fires off a translated-down starting
-      // state and the bar slides in.
-      const raf = requestAnimationFrame(() => setVisible(true));
-      return () => cancelAnimationFrame(raf);
-    }
-    if (!mounted) return;
-    setVisible(false);
-    const t = window.setTimeout(() => setMounted(false), 200);
-    return () => window.clearTimeout(t);
-  }, [open, mounted]);
-
-  if (!mounted) return null;
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-6 pb-3"
-      style={{
-        transform: visible ? "translateY(0)" : "translateY(12px)",
-        opacity: visible ? 1 : 0,
-        transition:
-          "transform 200ms ease-out, opacity 200ms ease-out",
-      }}
-    >
-      <div className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-xs text-[var(--text-secondary)]">
-        <span>End session?</span>
-        <span className="text-[var(--text-muted)]">·</span>
-        <Kbd>Enter</Kbd>
-        <span>confirm</span>
-        <span className="text-[var(--text-muted)]">·</span>
-        <Kbd>Esc</Kbd>
-        <span>cancel</span>
-      </div>
-    </div>
-  );
-}
-
-function StatusDot({ status }: { status: MetaState["status"] }) {
+function StatusDot({
+  status,
+  intervalType,
+}: {
+  status: MetaState["status"];
+  intervalType: string | null;
+}) {
   const color =
-    status === "running"
-      ? "bg-[var(--success)]"
-      : status === "paused"
-        ? "bg-[var(--warning)]"
-        : "bg-[var(--text-muted)]";
+    status === "paused"
+      ? "var(--status-paused)"
+      : status === "running"
+        ? intervalType === "break"
+          ? "var(--status-break)"
+          : "var(--status-running)"
+        : "var(--status-idle)";
   return (
     <span
-      className={`inline-block h-2 w-2 rounded-full transition-colors duration-150 ease-out ${color}`}
+      className="inline-block h-[6px] w-[6px]"
+      style={{
+        backgroundColor: color,
+        borderRadius: 9999,
+        animation:
+          status === "running" ? "flint-blink 1.2s steps(2) infinite" : "none",
+      }}
     />
   );
 }
 
-function Kbd({ children }: { children: React.ReactNode }) {
+function Sep() {
+  return <span className="text-[var(--text-muted)]">·</span>;
+}
+
+function HintLine({
+  isIdle,
+  isRunning,
+  stopConfirmOpen,
+  hintDismissed,
+}: {
+  isIdle: boolean;
+  isRunning: boolean;
+  stopConfirmOpen: boolean;
+  hintDismissed: boolean;
+}) {
+  if (stopConfirmOpen) {
+    return (
+      <div className="mt-1 text-[11px] lowercase tracking-wide text-[var(--status-error)]">
+        stop session? <span className="text-[var(--text-muted)]">·</span>{" "}
+        <span className="text-[var(--text-primary)]">[Enter]</span> confirm{" "}
+        <span className="text-[var(--text-muted)]">·</span>{" "}
+        <span className="text-[var(--text-primary)]">[Esc]</span> cancel
+      </div>
+    );
+  }
+
+  if (isIdle) {
+    if (hintDismissed) return null;
+    return (
+      <div className="mt-1 text-[11px] lowercase tracking-wide text-[var(--text-muted)]">
+        <span className="text-[var(--text-secondary)]">[Space]</span> start{" "}
+        <span>·</span>{" "}
+        <span className="text-[var(--text-secondary)]">[Ctrl+T]</span> tags{" "}
+        <span>·</span>{" "}
+        <span className="text-[var(--text-secondary)]">[Ctrl+1/2/3]</span> mode
+      </div>
+    );
+  }
+
   return (
-    <kbd className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
-      {children}
-    </kbd>
+    <div className="mt-1 text-[11px] lowercase tracking-wide text-[var(--text-muted)]">
+      <span className="text-[var(--text-secondary)]">[Space]</span>{" "}
+      {isRunning ? "pause" : "resume"} <span>·</span>{" "}
+      <span className="text-[var(--text-secondary)]">[Enter]</span> mark{" "}
+      <span>·</span>{" "}
+      <span className="text-[var(--text-secondary)]">[Esc]</span> stop
+    </div>
   );
 }
 
@@ -291,7 +303,6 @@ function computeDisplayTime(
   mode: Mode,
   config: Config | null,
 ): string {
-  // Idle: show target duration for the selected mode (or 00:00 for stopwatch)
   if (isIdle) {
     if (mode === "pomodoro") {
       return formatTime(
@@ -304,8 +315,6 @@ function computeDisplayTime(
     return formatTime(0);
   }
 
-  // Running/paused: pomodoro & countdown show remaining in current interval;
-  // stopwatch shows total elapsed.
   if (hasTarget && intervalRemaining != null) {
     return formatTime(intervalRemaining);
   }

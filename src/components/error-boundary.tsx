@@ -37,44 +37,46 @@ export class FlintErrorBoundary extends Component<Props, State> {
 
   render(): ReactNode {
     if (this.state.error) {
+      const label = (this.props.label ?? "app").toUpperCase();
       return (
-        <div
-          style={{
-            padding: 40,
-            color: "#ef4444",
-            fontFamily:
-              "ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', monospace",
-            background: "#1e1e1e",
-            minHeight: "100vh",
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 18, marginBottom: 12 }}>
-            Flint hit an error
-          </h2>
-          <pre
-            style={{
-              whiteSpace: "pre-wrap",
-              fontSize: 12,
-              color: "#e0e0e0",
-              marginBottom: 16,
-            }}
-          >
-            {this.state.error.message}
-          </pre>
-          <button
-            onClick={this.handleRetry}
-            style={{
-              padding: "6px 12px",
-              background: "transparent",
-              border: "1px solid #4a9eff",
-              color: "#4a9eff",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 12,
-            }}
-          >
-            Retry
-          </button>
+        <div className="min-h-screen bg-[var(--bg-void)] px-8 py-8">
+          <div className="mx-auto max-w-3xl">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+              FLINT · {label} · RUNTIME ERROR
+            </div>
+            <h2 className="mt-2 text-[18px] font-medium uppercase tracking-wider text-[var(--status-error)]">
+              ■ unhandled exception
+            </h2>
+            <div className="mt-6 border-l border-[var(--status-error)] pl-4">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+                message
+              </div>
+              <pre className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-bright)]">
+                {this.state.error.message}
+              </pre>
+            </div>
+            {this.state.error.stack && (
+              <div className="mt-5 border-l border-[var(--border)] pl-4">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+                  stack
+                </div>
+                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                  {this.state.error.stack}
+                </pre>
+              </div>
+            )}
+            <div className="mt-6 flex items-center gap-4 text-[11px] uppercase tracking-wider">
+              <button
+                onClick={this.handleRetry}
+                className="border border-[var(--border-focus)] bg-[var(--bg-elevated)] px-3 py-1 text-[var(--text-primary)] transition-colors duration-100 ease-out hover:border-[var(--accent)] hover:text-[var(--accent)]"
+              >
+                [retry]
+              </button>
+              <span className="text-[var(--text-muted)]">
+                restart flint if this keeps happening
+              </span>
+            </div>
+          </div>
         </div>
       );
     }

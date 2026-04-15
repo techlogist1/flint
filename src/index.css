@@ -3,25 +3,48 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252525;
-  --bg-elevated: #2d2d2d;
-  --border: #333333;
-  --text-primary: #e0e0e0;
-  --text-secondary: #888888;
-  --text-muted: #555555;
+  /* Surfaces — void of near-black, darkest → lightest */
+  --bg-void: #050505;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #0f0f0f;
+  --bg-elevated: #141414;
+  --bg-input: #0a0a0a;
+  --bg-overlay: #111111;
+
+  /* Borders — barely visible, structural only */
+  --border: #1a1a1a;
+  --border-subtle: #151515;
+  --border-focus: #2a2a2a;
+
+  /* Text — CRT phosphor hierarchy */
+  --text-primary: #b8b8b8;
+  --text-bright: #e0e0e0;
+  --text-secondary: #5a5a5a;
+  --text-muted: #333333;
+
+  /* Accent — terminal cursor green */
   --accent: #16a34a;
-  --accent-subtle: #16a34a22;
-  /* V-H1: accent ramp used by the stats heatmap. Alpha-suffixed hex
-     works because SVG `fill` accepts 8-char hex natively. Changing the
-     base accent hue is a one-line edit; these derived tokens follow
-     automatically once the hex is updated in lockstep. */
-  --accent-25: #16a34a40;
-  --accent-45: #16a34a70;
-  --accent-65: #16a34aa0;
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --danger: #ef4444;
+  --accent-bright: #22c55e;
+  --accent-dim: #16a34a80;
+  --accent-subtle: #16a34a1f;
+  --accent-tinted-border: #16a34a40;
+
+  /* Semantic status */
+  --status-running: #16a34a;
+  --status-paused: #f59e0b;
+  --status-break: #3b82f6;
+  --status-idle: #333333;
+  --status-error: #dc2626;
+
+  /* Legacy aliases — kept so a handful of components referencing
+     --success / --warning / --danger / --accent-25..65 do not have to
+     change their class literals. */
+  --success: #16a34a;
+  --warning: #f59e0b;
+  --danger: #dc2626;
+  --accent-25: #16a34a33;
+  --accent-45: #16a34a66;
+  --accent-65: #16a34a99;
 
   color-scheme: dark;
   font-synthesis: none;
@@ -37,24 +60,31 @@ body,
   margin: 0;
 }
 
-body {
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
+/* Every element inherits JetBrains Mono. No sans-serif anywhere. */
+*,
+*::before,
+*::after {
   font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+    "JetBrains Mono",
+    "Fira Code",
+    "SF Mono",
+    "Cascadia Code",
+    "Consolas",
+    monospace;
+}
+
+body {
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* Overlay window: the Tauri window itself is transparent (transparent: true
-   in overlay.rs), so the body and root must NOT paint a background — only
-   the inner pill/card container is visible on the desktop. The black-
-   rectangle bug came from leaving an opaque body background here. */
+/* Overlay body is transparent — only the pill is visible on the desktop. */
 body.flint-overlay-body,
 body.flint-overlay-body #root {
   background: transparent;
@@ -62,51 +92,47 @@ body.flint-overlay-body #root {
 
 ::selection {
   background-color: var(--accent-subtle);
-  color: var(--text-primary);
+  color: var(--text-bright);
 }
 
-/* Custom scrollbars — thin, dark, subtle hover.
-   Applies everywhere except the overlay window, which does not scroll. */
+/* Scrollbars — 4px, terminal-subtle. */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-elevated);
-  border-radius: 3px;
+  background: var(--border-focus);
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border);
+  background: var(--text-muted);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-elevated) transparent;
+  scrollbar-color: var(--border-focus) transparent;
 }
 
-/* Native <select> — strip the browser chrome and draw our own caret.
-   Applied via the .flint-select class so plugin-authored <select>s render
-   with the same look when they opt in. */
+/* Native <select> — strip the browser chrome, draw our own caret. */
 select,
 .flint-select {
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  background-color: var(--bg-elevated);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-color: var(--bg-input);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235a5a5a' stroke-width='1.25' stroke-linecap='square' stroke-linejoin='miter'/></svg>");
   background-repeat: no-repeat;
   background-position: right 8px center;
   padding-right: 24px;
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 select:focus,
@@ -120,31 +146,6 @@ select option {
   color: var(--text-primary);
 }
 
-@keyframes flint-toast {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* Toast bar that slides up from the bottom of the timer area. */
-@keyframes flint-slideup {
-  from {
-    opacity: 0;
-    transform: translateY(100%);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* Overlay content fade-in — 100ms delay so the window resize completes
-   before the expanded layout renders. */
 @keyframes flint-fadein {
   from {
     opacity: 0;
@@ -154,7 +155,17 @@ select option {
   }
 }
 
-/* View crossfade for main-area tab switches. */
+@keyframes flint-toast {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes flint-crossfade {
   from {
     opacity: 0;
@@ -164,13 +175,24 @@ select option {
   }
 }
 
-/* D-H2: range inputs. Flat dark theme — 2px track in bg-elevated, 12px round
-   accent-colored thumb, no shadows. */
+/* Subtle blink for the running status dot, like a terminal cursor. */
+@keyframes flint-blink {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  61%,
+  100% {
+    opacity: 0.4;
+  }
+}
+
+/* Range inputs — 2px track, 10px square thumb, no decoration. */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
-  height: 16px;
+  height: 14px;
   cursor: pointer;
 }
 
@@ -182,38 +204,31 @@ input[type="range"]::-webkit-slider-runnable-track {
   height: 2px;
   background: var(--bg-elevated);
   border: none;
-  border-radius: 1px;
+  border-radius: 0;
 }
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 0;
   background: var(--accent);
   border: none;
-  box-shadow: none;
-  margin-top: -5px;
-  transition: transform 150ms ease-out;
-}
-
-input[type="range"]::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
+  margin-top: -4px;
 }
 
 input[type="range"]::-moz-range-track {
   height: 2px;
   background: var(--bg-elevated);
   border: none;
-  border-radius: 1px;
+  border-radius: 0;
 }
 
 input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 0;
   background: var(--accent);
   border: none;
-  box-shadow: none;
 }
