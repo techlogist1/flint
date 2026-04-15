@@ -16,6 +16,22 @@ import {
 import { runInSandbox } from "../lib/plugin-sandbox";
 import type { PluginDescriptor } from "../lib/plugins";
 import type { TimerModeInfo } from "../lib/types";
+import {
+  clearAllHooks,
+  clearPluginHooks,
+  collectAfterHooks,
+  collectBeforeHooks,
+  createHookRegistry,
+  registerAfterHook,
+  registerBeforeHook,
+  type HookContext,
+  type HookHandler,
+  type HookRegistry,
+} from "../lib/hook-registry";
+import type {
+  FlintCommand,
+  RegisteredCommand,
+} from "../lib/command-registry";
 
 interface PluginNotification {
   id: string;
@@ -58,6 +74,24 @@ interface PluginContextValue {
   /** Enabled timer-mode plugins in registration order. Drives Ctrl+N, the
    *  default-mode dropdown, and every other UI surface that lists modes. */
   timerModes: TimerModeInfo[];
+  /** Current command registry snapshot. Updates reactively so the palette
+   *  re-renders when commands are added/removed. */
+  commands: RegisteredCommand[];
+  /** Register a command owned by the core app (not a plugin). Used by
+   *  App.tsx to publish core:* commands. Returns an unsubscribe function. */
+  registerCoreCommand: (command: FlintCommand) => () => void;
+  /** Register a before-hook owned by the core app. Used when core code needs
+   *  to intercept its own events (rare — mostly plugins register hooks). */
+  registerCoreHook: (event: string, handler: HookHandler) => () => void;
+  /** Run the before-hook pipeline synchronously. Returns `true` if any
+   *  handler cancelled. Core code calls this before dispatching an action. */
+  runBeforeHooks: (event: string, context: HookContext) => Promise<boolean>;
+  /** Fire after-hooks for an event. Called by the Tauri event bridge and
+   *  by core code when a pure-frontend event completes. */
+  dispatchAfterHooks: (event: string, payload: unknown) => void;
+  /** Execute a registered command by id. Runs `before:command:execute`,
+   *  the command callback, then after-hooks. Updates MRU ordering. */
+  executeCommand: (id: string, source: string) => Promise<void>;
 }
 
 const PluginContext = createContext<PluginContextValue | null>(null);
@@ -78,16 +112,26 @@ export function useTimerModes(): TimerModeInfo[] {
   return usePlugins().timerModes;
 }
 
+const CORE_OWNER = "__core__";
+
+// Command MRU — exposed as a module-level singleton so the palette can read
+// recency without re-subscribing. Safe because it's per-process; PluginHost
+// only mounts once. `executeCommand` bumps the timestamp; `searchCommands`
+// reads it during scoring.
+const commandMruShared = new Map<string, number>();
+
+export function getCommandMru(): Map<string, number> {
+  return commandMruShared;
+}
+
 export function PluginHost({ children }: { children: React.ReactNode }) {
   const [plugins, setPlugins] = useState<PluginDescriptor[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [slots, setSlots] = useState<Record<string, SlotEntry[]>>({});
   const [notifications, setNotifications] = useState<PluginNotification[]>([]);
+  const [commands, setCommands] = useState<RegisteredCommand[]>([]);
 
-  // event name → pluginId → Set<callback>
-  const subscribersRef = useRef<
-    Map<string, Map<string, Set<PluginEventCallback>>>
-  >(new Map());
+  const hookRegistryRef = useRef<HookRegistry>(createHookRegistry());
   // event name → active Tauri unlisten function (or cancel-sentinel for pending)
   const unlistenersRef = useRef<Map<string, UnlistenFn>>(new Map());
   // Last-seen timestamps keyed by `${pluginId}::${message}`. Pruned opportunistically
@@ -151,17 +195,81 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const dispatchEvent = useCallback(
+  /**
+   * Run a before-hook handler with the same 5-second budget, but await the
+   * result so the caller can honour `{ cancel: true }`. Returns the handler's
+   * return value, or `undefined` if it timed out / threw.
+   */
+  const safeCallHook = useCallback(
+    async (
+      pluginId: string,
+      event: string,
+      handler: HookHandler,
+      context: HookContext,
+    ): Promise<void | { cancel?: boolean }> => {
+      let timeoutHandle: number | undefined;
+      const timeoutPromise = new Promise<undefined>((resolve) => {
+        timeoutHandle = window.setTimeout(() => {
+          console.error(
+            `[plugin ${pluginId}] before-hook "${event}" timed out after ${PLUGIN_CALLBACK_TIMEOUT_MS}ms`,
+          );
+          resolve(undefined);
+        }, PLUGIN_CALLBACK_TIMEOUT_MS);
+      });
+      try {
+        const value = await Promise.race([
+          Promise.resolve(handler(context)),
+          timeoutPromise,
+        ]);
+        if (timeoutHandle != null) window.clearTimeout(timeoutHandle);
+        return value ?? undefined;
+      } catch (err) {
+        if (timeoutHandle != null) window.clearTimeout(timeoutHandle);
+        console.error(
+          `[plugin ${pluginId}] before-hook "${event}" threw:`,
+          err,
+        );
+        return undefined;
+      }
+    },
+    [],
+  );
+
+  const dispatchAfterHooks = useCallback(
     (event: string, payload: unknown) => {
-      const byPlugin = subscribersRef.current.get(event);
-      if (!byPlugin) return;
-      for (const [pluginId, callbacks] of byPlugin) {
-        for (const cb of callbacks) {
-          safeCallPlugin(pluginId, event, cb, payload);
-        }
+      const handlers = collectAfterHooks(hookRegistryRef.current, event);
+      for (const { pluginId, handler } of handlers) {
+        safeCallPlugin(pluginId, event, handler, payload);
       }
     },
     [safeCallPlugin],
+  );
+
+  const runBeforeHooks = useCallback(
+    async (event: string, context: HookContext): Promise<boolean> => {
+      const handlers = collectBeforeHooks(hookRegistryRef.current, event);
+      for (const { pluginId, handler } of handlers) {
+        const result = await safeCallHook(pluginId, event, handler, context);
+        if (result && typeof result === "object" && result.cancel === true) {
+          return true;
+        }
+      }
+      return false;
+    },
+    [safeCallHook],
+  );
+
+  const runEmitPipeline = useCallback(
+    async (
+      event: string,
+      context: HookContext,
+    ): Promise<{ cancelled: boolean }> => {
+      const cancelled = await runBeforeHooks(event, context);
+      if (cancelled) return { cancelled: true };
+      dispatchAfterHooks(event, context);
+      return { cancelled: false };
+    },
+    [runBeforeHooks, dispatchAfterHooks],
   );
 
   const ensureListener = useCallback(
@@ -172,7 +280,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         canceled = true;
       };
       unlistenersRef.current.set(event, cancel);
-      listen(event, (evt) => dispatchEvent(event, evt.payload))
+      listen(event, (evt) => dispatchAfterHooks(event, evt.payload))
         .then((realUnlisten) => {
           if (canceled) {
             realUnlisten();
@@ -187,26 +295,107 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           }
         });
     },
-    [dispatchEvent],
+    [dispatchAfterHooks],
   );
 
+  /**
+   * `flint.on(event, handler)` — registers an after-hook. This is the
+   * existing plugin API; it now maps to the hook registry's after bucket
+   * so the pipeline can dispatch to it uniformly. Also ensures a Tauri
+   * event listener is attached so engine-emitted events reach handlers.
+   */
   const subscribe = useCallback(
     (pluginId: string, event: string, cb: PluginEventCallback) => {
-      const subs = subscribersRef.current;
-      let byPlugin = subs.get(event);
-      if (!byPlugin) {
-        byPlugin = new Map();
-        subs.set(event, byPlugin);
-      }
-      let callbacks = byPlugin.get(pluginId);
-      if (!callbacks) {
-        callbacks = new Set();
-        byPlugin.set(pluginId, callbacks);
-      }
-      callbacks.add(cb);
+      registerAfterHook(hookRegistryRef.current, pluginId, event, cb);
       ensureListener(event);
     },
     [ensureListener],
+  );
+
+  const registerHookForPlugin = useCallback(
+    (pluginId: string, event: string, handler: HookHandler) => {
+      return registerBeforeHook(
+        hookRegistryRef.current,
+        pluginId,
+        event,
+        handler,
+      );
+    },
+    [],
+  );
+
+  const registerCoreHook = useCallback(
+    (event: string, handler: HookHandler) => {
+      return registerBeforeHook(
+        hookRegistryRef.current,
+        CORE_OWNER,
+        event,
+        handler,
+      );
+    },
+    [],
+  );
+
+  const registerCommandForOwner = useCallback(
+    (owner: string, command: FlintCommand): (() => void) => {
+      const registered: RegisteredCommand = { ...command, owner };
+      setCommands((prev) => {
+        const filtered = prev.filter((c) => c.id !== command.id);
+        if (prev.length !== filtered.length) {
+          console.warn(
+            `[plugin-host] command "${command.id}" re-registered — last registration wins`,
+          );
+        }
+        return [...filtered, registered];
+      });
+      return () => {
+        setCommands((prev) =>
+          prev.filter((c) => !(c.id === command.id && c.owner === owner)),
+        );
+      };
+    },
+    [],
+  );
+
+  const registerPluginCommand = useCallback(
+    (pluginId: string, command: FlintCommand) => {
+      return registerCommandForOwner(pluginId, command);
+    },
+    [registerCommandForOwner],
+  );
+
+  const registerCoreCommand = useCallback(
+    (command: FlintCommand) => {
+      return registerCommandForOwner(CORE_OWNER, command);
+    },
+    [registerCommandForOwner],
+  );
+
+  const commandsRef = useRef<RegisteredCommand[]>([]);
+  commandsRef.current = commands;
+
+  const executeCommand = useCallback(
+    async (id: string, source: string) => {
+      const command = commandsRef.current.find((c) => c.id === id);
+      if (!command) {
+        console.warn(`[plugin-host] executeCommand: unknown id "${id}"`);
+        return;
+      }
+      commandMruShared.set(id, Date.now());
+      const ctx: HookContext = { command_id: id, source };
+      const cancelled = await runBeforeHooks("command:execute", ctx);
+      if (cancelled) return;
+      try {
+        await Promise.resolve(command.callback());
+      } catch (err) {
+        console.error(
+          `[plugin-host] command "${id}" (${command.owner}) threw:`,
+          err,
+        );
+      }
+      dispatchAfterHooks("command:execute", ctx);
+    },
+    [runBeforeHooks, dispatchAfterHooks],
   );
 
   const renderSlot = useCallback(
@@ -228,22 +417,15 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const showNotification = useCallback(
-    (pluginId: string, message: string, _options?: { duration?: number }) => {
-      // FIX 4: master kill-switch — if notifications are disabled during a
-      // plugin reload, silently drop the call. Prevents orphan toasts.
+  const actuallyShowNotification = useCallback(
+    (pluginId: string, message: string, ctx: HookContext) => {
       if (!notificationsEnabledRef.current) return;
-
       const now = Date.now();
       const dedupKey = `${pluginId}::${message}`;
       const lastSeen = notifyDedupRef.current.get(dedupKey);
       if (lastSeen != null && now - lastSeen < NOTIFICATION_DEDUP_MS) {
-        // Same notification fired recently — drop it so a misbehaving plugin
-        // cannot stack identical toasts on top of each other.
         return;
       }
-      // Opportunistic prune: drop dedup entries older than the window so the
-      // map stays bounded over long sessions.
       for (const [k, ts] of notifyDedupRef.current) {
         if (now - ts >= NOTIFICATION_DEDUP_MS) {
           notifyDedupRef.current.delete(k);
@@ -251,23 +433,45 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       }
       notifyDedupRef.current.set(dedupKey, now);
 
-      // FIX 4: enforce the hard stack cap BEFORE scheduling any timer.
-      // Reading notifyCountRef is safe under Strict Mode since it's not a
-      // state updater closure — the count is bumped outside the setter.
       if (notifyCountRef.current >= NOTIFICATION_STACK_LIMIT) return;
 
       const id = Math.random().toString(36).slice(2, 10);
       notifyCountRef.current += 1;
       setNotifications((prev) => [...prev, { id, pluginId, message }]);
-      // FIX 4: hardcoded 4-second auto-dismiss. Plugins cannot override.
       const timerId = window.setTimeout(() => {
         notifyTimersRef.current.delete(id);
         notifyCountRef.current = Math.max(0, notifyCountRef.current - 1);
         setNotifications((prev) => prev.filter((n) => n.id !== id));
       }, NOTIFICATION_AUTO_DISMISS_MS);
       notifyTimersRef.current.set(id, timerId);
+
+      dispatchAfterHooks("notification:show", ctx);
     },
-    [],
+    [dispatchAfterHooks],
+  );
+
+  const showNotification = useCallback(
+    (pluginId: string, message: string, _options?: { duration?: number }) => {
+      // FIX 4: master kill-switch — if notifications are disabled during a
+      // plugin reload, silently drop the call. Prevents orphan toasts.
+      if (!notificationsEnabledRef.current) return;
+
+      // Hook pipeline: before:notification:show can cancel or mutate text.
+      const ctx: HookContext = {
+        title: pluginId,
+        body: message,
+        plugin_id: pluginId,
+      };
+      void runBeforeHooks("notification:show", ctx).then((cancelled) => {
+        if (cancelled) return;
+        const finalMessage =
+          typeof ctx.body === "string" ? ctx.body : message;
+        const finalPluginId =
+          typeof ctx.plugin_id === "string" ? ctx.plugin_id : pluginId;
+        actuallyShowNotification(finalPluginId, finalMessage, ctx);
+      });
+    },
+    [runBeforeHooks, actuallyShowNotification],
   );
 
   const dismissNotification = useCallback(
@@ -293,7 +497,26 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       }
     }
     unlistenersRef.current.clear();
-    subscribersRef.current.clear();
+    // Wipe every hook/command owned by a plugin, but leave core-owned
+    // registrations in place — AppShell registers them once at mount and
+    // does not re-register on reload.
+    const registry = hookRegistryRef.current;
+    const pluginOwners = new Set<string>();
+    for (const byPlugin of registry.before.values()) {
+      for (const owner of byPlugin.keys()) {
+        if (owner !== CORE_OWNER) pluginOwners.add(owner);
+      }
+    }
+    for (const byPlugin of registry.after.values()) {
+      for (const owner of byPlugin.keys()) {
+        if (owner !== CORE_OWNER) pluginOwners.add(owner);
+      }
+    }
+    for (const owner of pluginOwners) {
+      clearPluginHooks(registry, owner);
+    }
+    setCommands((prev) => prev.filter((c) => c.owner === CORE_OWNER));
+
     for (const [, timerId] of notifyTimersRef.current) {
       window.clearTimeout(timerId);
     }
@@ -330,6 +553,9 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           subscribe,
           renderSlot,
           showNotification,
+          registerHook: registerHookForPlugin,
+          registerCommand: registerPluginCommand,
+          runEmitPipeline,
         });
         runInSandbox(p.source, api);
       } catch (e) {
@@ -342,7 +568,18 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     // FIX 4: plugins are initialised — safe to accept notifications again.
     notificationsEnabledRef.current = true;
     setLoaded(true);
-  }, [renderSlot, showNotification, subscribe, tearDown]);
+    // Fire app:ready so any plugin that needs post-load setup hears it.
+    dispatchAfterHooks("app:ready", {});
+  }, [
+    renderSlot,
+    showNotification,
+    subscribe,
+    tearDown,
+    registerHookForPlugin,
+    registerPluginCommand,
+    runEmitPipeline,
+    dispatchAfterHooks,
+  ]);
 
   const setPluginEnabled = useCallback(
     async (pluginId: string, enabled: boolean) => {
@@ -355,7 +592,10 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     reload();
     return () => {
+      // Fire app:quit before cleanup so any hook can observe shutdown.
+      dispatchAfterHooks("app:quit", {});
       tearDown();
+      clearAllHooks(hookRegistryRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -379,9 +619,16 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         notifications,
         dismissNotification,
         timerModes,
+        commands,
+        registerCoreCommand,
+        registerCoreHook,
+        runBeforeHooks,
+        dispatchAfterHooks,
+        executeCommand,
       }}
     >
       {children}
     </PluginContext.Provider>
   );
 }
+

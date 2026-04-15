@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { TimerStateView } from "./types";
+import type { HookContext, HookHandler } from "./hook-registry";
+import type { FlintCommand } from "./command-registry";
 
 export type PluginEventCallback = (payload: unknown) => void | Promise<void>;
 
@@ -11,22 +13,46 @@ export interface PluginHostHandles {
     message: string,
     options?: { duration?: number },
   ) => void;
+  registerHook: (
+    pluginId: string,
+    event: string,
+    handler: HookHandler,
+  ) => () => void;
+  registerCommand: (pluginId: string, command: FlintCommand) => () => void;
+  runEmitPipeline: (
+    event: string,
+    context: HookContext,
+  ) => Promise<{ cancelled: boolean }>;
 }
 
 export interface FlintPluginAPI {
   on(event: string, callback: PluginEventCallback): void;
   /**
-   * Broadcast a topic from a sandboxed plugin to host React components.
-   * Routed through `window.CustomEvent("flint:plugin:${topic}")` from the
-   * host (plugin-api.ts), so the plugin itself never touches `window` —
-   * which is shadowed inside the sandbox (S-C1).
+   * Broadcast a topic from a sandboxed plugin. Runs the full hook pipeline
+   * (before → after), then fires a `window.CustomEvent("flint:plugin:${topic}")`
+   * for legacy host-React listeners. The plugin itself never touches
+   * `window` — which is shadowed inside the sandbox (S-C1).
    */
-  emit(topic: string, payload?: unknown): void;
+  emit(topic: string, payload?: unknown): Promise<{ cancelled: boolean }>;
+  /**
+   * Register a before-hook (interceptor). Handlers receive a context object
+   * they can mutate, and can return `{ cancel: true }` to abort the action.
+   * Returns an unsubscribe function; handlers are also auto-cleaned on
+   * plugin reload.
+   */
+  hook(event: string, handler: HookHandler): () => void;
+  /**
+   * Register a command in the global command registry. Commands appear in
+   * the palette (Ctrl+P) and can be bound to hotkeys. Returns an
+   * unsubscribe function; commands are auto-cleaned on plugin reload.
+   */
+  registerCommand(command: FlintCommand): () => void;
   getTimerState(): Promise<TimerStateView>;
   nextInterval(): Promise<void>;
   stopSession(): Promise<void>;
   pauseSession(): Promise<void>;
   resumeSession(): Promise<void>;
+  markQuestion(): Promise<void>;
   getSessions(options?: {
     limit?: number;
     tags?: string[];
@@ -59,13 +85,27 @@ export function createPluginAPI(
     on(event, cb) {
       host.subscribe(pluginId, event, cb);
     },
-    emit(topic, payload) {
-      // Dispatched from host context — `window` is the real window here,
-      // not the sandbox's `undefined` shadow. Listeners on the React side
-      // subscribe to `flint:plugin:${topic}`.
-      window.dispatchEvent(
-        new CustomEvent(`flint:plugin:${topic}`, { detail: payload }),
-      );
+    async emit(topic, payload) {
+      const ctx: HookContext =
+        payload && typeof payload === "object"
+          ? ({ ...(payload as Record<string, unknown>) } as HookContext)
+          : ({ payload } as HookContext);
+      const result = await host.runEmitPipeline(topic, ctx);
+      if (!result.cancelled) {
+        // Dispatched from host context — `window` is the real window here,
+        // not the sandbox's `undefined` shadow. Listeners on the React side
+        // subscribe to `flint:plugin:${topic}`.
+        window.dispatchEvent(
+          new CustomEvent(`flint:plugin:${topic}`, { detail: payload }),
+        );
+      }
+      return result;
+    },
+    hook(event, handler) {
+      return host.registerHook(pluginId, event, handler);
+    },
+    registerCommand(command) {
+      return host.registerCommand(pluginId, command);
     },
     async getTimerState() {
       return invoke<TimerStateView>("get_timer_state");
@@ -81,6 +121,9 @@ export function createPluginAPI(
     },
     async resumeSession() {
       await invoke("resume_session");
+    },
+    async markQuestion() {
+      await invoke("mark_question");
     },
     async getSessions(options) {
       const all = await invoke<Array<Record<string, unknown>>>("list_sessions");

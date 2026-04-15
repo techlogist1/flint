@@ -4,7 +4,9 @@ use crate::cache::{
 };
 use crate::config::{self, Config};
 use crate::plugins::{LoadedPlugin, PluginDescriptor};
+use crate::presets::{self, Preset, PresetDraft};
 use crate::storage::{self, AppState};
+use crate::tags::{self, TagIndex};
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::Utc;
 use rand::Rng;
@@ -17,6 +19,47 @@ pub struct EngineState(pub Mutex<TimerState>);
 pub struct ConfigState(pub Mutex<Config>);
 pub struct PluginRegistry(pub Mutex<Vec<LoadedPlugin>>);
 pub struct AppStateStore(pub Mutex<AppState>);
+
+/// Session-scoped config overrides applied by presets. Lives for the
+/// duration of the active session only; cleared on finalize_session. Never
+/// written to config.toml — this is what makes presets safe to experiment
+/// with.
+#[derive(Debug, Clone)]
+pub struct ActiveOverride {
+    pub plugin_id: String,
+    pub values: Map<String, Value>,
+}
+
+pub struct SessionOverridesState(pub Mutex<Option<ActiveOverride>>);
+
+impl SessionOverridesState {
+    pub fn new_empty() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub fn snapshot(&self) -> Option<ActiveOverride> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// Clone the base config and merge any active session overrides into the
+/// section owned by `plugin_id`. Used by `build_first_interval` and
+/// `next_interval` so a running preset session honours the overridden
+/// durations without ever touching config.toml.
+fn merged_config(base: &Config, plugin_id: &str, overrides: Option<&ActiveOverride>) -> Config {
+    let Some(ov) = overrides else {
+        return base.clone();
+    };
+    if ov.plugin_id != plugin_id || ov.values.is_empty() {
+        return base.clone();
+    }
+    let mut value = match serde_json::to_value(base) {
+        Ok(v) => v,
+        Err(_) => return base.clone(),
+    };
+    presets::apply_overrides_to_config(&mut value, plugin_id, &ov.values);
+    serde_json::from_value(value).unwrap_or_else(|_| base.clone())
+}
 
 /// FIX 1: minimum gap between two consecutive interval transitions. Any
 /// `next_interval` call that arrives inside this window after the last
@@ -61,19 +104,42 @@ fn build_first_interval(mode: &str, config: &Config) -> Interval {
 pub fn start_session(
     mode: String,
     tags: Vec<String>,
+    overrides: Option<Value>,
     engine: State<'_, EngineState>,
     config: State<'_, ConfigState>,
     recovery: State<'_, storage::RecoveryWriter>,
+    session_overrides: State<'_, SessionOverridesState>,
+    tag_index: State<'_, TagIndex>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
     if state.status != TimerStatus::Idle {
         return Err("a session is already active".into());
     }
+
+    // Materialise the override payload (if any) into the shared state so
+    // next_interval / get_plugin_config see it for the rest of the session.
+    let override_map: Option<Map<String, Value>> = match overrides {
+        Some(Value::Object(m)) => Some(m),
+        _ => None,
+    };
+    let active_override = override_map.map(|values| ActiveOverride {
+        plugin_id: mode.clone(),
+        values,
+    });
+    if let Ok(mut guard) = session_overrides.0.lock() {
+        *guard = active_override.clone();
+    }
+
+    // Push any new tags into the in-memory tag index so autocomplete picks
+    // them up before the session even ends.
+    tags::insert_many(&tag_index, &tags);
+
     let id = generate_id();
     let cfg = config.0.lock().map_err(|e| e.to_string())?;
-    let interval = build_first_interval(&mode, &cfg);
+    let merged = merged_config(&cfg, &mode, active_override.as_ref());
     drop(cfg);
+    let interval = build_first_interval(&mode, &merged);
     let it_type = interval.interval_type.clone();
     let it_target = interval.target_sec;
 
@@ -156,6 +222,7 @@ pub(crate) fn finalize_session(
     let session_id = state.session_id.clone().unwrap_or_default();
     let duration_sec = state.elapsed_sec;
     let questions_done = state.questions_done;
+    let ending_tags = state.tags.clone();
 
     let path = storage::write_session_file(state, ended_at, completed)?;
     println!("[flint] wrote session file {}", path.display());
@@ -172,6 +239,16 @@ pub(crate) fn finalize_session(
                 }
             }
         }
+    }
+
+    // Push the session's tags into the autocomplete index so the next idle
+    // session sees them without waiting for a restart.
+    tags::insert_many(&app.state::<TagIndex>(), &ending_tags);
+
+    // Clear session-scoped preset overrides so the next session falls back
+    // to the saved config.toml values.
+    if let Ok(mut guard) = app.state::<SessionOverridesState>().0.lock() {
+        *guard = None;
     }
 
     // Recovery deletion is funneled through the background writer so it
@@ -266,6 +343,7 @@ pub fn next_interval(
     engine: State<'_, EngineState>,
     config: State<'_, ConfigState>,
     recovery: State<'_, storage::RecoveryWriter>,
+    session_overrides: State<'_, SessionOverridesState>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -290,7 +368,10 @@ pub fn next_interval(
         }
     }
 
-    let config = config.0.lock().map_err(|e| e.to_string())?;
+    let overrides = session_overrides.snapshot();
+    let cfg = config.0.lock().map_err(|e| e.to_string())?;
+    let config = merged_config(&cfg, &state.mode, overrides.as_ref());
+    drop(cfg);
     let Some(current) = state.current_interval.take() else {
         return Err("no current interval".into());
     };
@@ -484,6 +565,7 @@ pub fn get_plugin_config(
     plugin_id: String,
     registry: State<'_, PluginRegistry>,
     config: State<'_, ConfigState>,
+    session_overrides: State<'_, SessionOverridesState>,
 ) -> Result<Value, String> {
     let plugins = registry.0.lock().map_err(|e| e.to_string())?;
     let plugin = plugins
@@ -495,8 +577,18 @@ pub fn get_plugin_config(
     drop(plugins);
 
     let cfg = config.0.lock().map_err(|e| e.to_string())?;
-    let full = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+    let mut full = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
     drop(cfg);
+
+    // Merge any active session overrides for this plugin so getConfig()
+    // returns the effective values while a preset session is running. The
+    // overrides never persist — they disappear when finalize_session
+    // clears SessionOverridesState.
+    if let Some(active) = session_overrides.snapshot() {
+        if active.plugin_id == plugin_id {
+            presets::apply_overrides_to_config(&mut full, &plugin_id, &active.values);
+        }
+    }
 
     let section_value = match section {
         Some(s) => resolve_path(&full, &s).cloned().unwrap_or(Value::Null),
@@ -923,6 +1015,44 @@ pub fn export_all_sessions() -> Result<String, String> {
     let json = serde_json::to_string_pretty(&all_sessions).map_err(|e| e.to_string())?;
     storage::write_atomic(&out_path, json.as_bytes())?;
     Ok(out_path.display().to_string())
+}
+
+// ============================================================================
+// PRESET CRUD
+// ============================================================================
+
+#[tauri::command]
+pub fn list_presets() -> Result<Vec<Preset>, String> {
+    presets::list_all()
+}
+
+#[tauri::command]
+pub fn save_preset(preset: PresetDraft) -> Result<Preset, String> {
+    presets::save(preset)
+}
+
+#[tauri::command]
+pub fn delete_preset(id: String) -> Result<(), String> {
+    presets::delete(&id)
+}
+
+#[tauri::command]
+pub fn load_preset(id: String) -> Result<Preset, String> {
+    presets::load(&id)
+}
+
+#[tauri::command]
+pub fn touch_preset(id: String) -> Result<(), String> {
+    presets::touch(&id)
+}
+
+// ============================================================================
+// TAG INDEX
+// ============================================================================
+
+#[tauri::command]
+pub fn get_known_tags(tag_index: State<'_, TagIndex>) -> Result<Vec<String>, String> {
+    Ok(tags::snapshot(&tag_index))
 }
 
 #[cfg(test)]

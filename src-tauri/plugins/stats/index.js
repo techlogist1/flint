@@ -8,3 +8,15 @@
 flint.on("session:complete", (payload) => {
   flint.emit("stats:refresh", payload);
 });
+
+if (typeof flint.registerCommand === "function") {
+  flint.registerCommand({
+    id: "stats:refresh",
+    name: "Stats: refresh",
+    icon: "⟳",
+    category: "stats",
+    callback: () => {
+      flint.emit("stats:refresh", {});
+    },
+  });
+}

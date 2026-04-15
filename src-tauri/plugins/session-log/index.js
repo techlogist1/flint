@@ -12,3 +12,15 @@ flint.on("session:complete", (payload) => {
 flint.on("session:cancel", (payload) => {
   flint.emit("sessions:refresh", payload);
 });
+
+if (typeof flint.registerCommand === "function") {
+  flint.registerCommand({
+    id: "session-log:refresh",
+    name: "Session Log: refresh",
+    icon: "⟳",
+    category: "log",
+    callback: () => {
+      flint.emit("sessions:refresh", {});
+    },
+  });
+}

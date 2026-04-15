@@ -15,3 +15,22 @@ flint.on("interval:end", async (payload) => {
     console.error("[countdown] stopSession failed", e);
   }
 });
+
+if (typeof flint.registerCommand === "function") {
+  flint.registerCommand({
+    id: "countdown:abort",
+    name: "Countdown: abort current timer",
+    icon: "×",
+    category: "countdown",
+    callback: async () => {
+      try {
+        const state = await flint.getTimerState();
+        if (state.mode === "countdown" && state.status !== "idle") {
+          await flint.stopSession();
+        }
+      } catch (e) {
+        console.error("[countdown] abort failed", e);
+      }
+    },
+  });
+}

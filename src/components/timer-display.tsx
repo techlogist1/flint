@@ -5,6 +5,9 @@ import { formatTime, modeDescription } from "../lib/format";
 import { useTickState, type MetaState } from "../hooks/use-timer";
 import { useTimerModes } from "./plugin-host";
 import { TagInput } from "./tag-input";
+import { TagAutocomplete } from "./tag-autocomplete";
+import { QuickStartBar } from "./quick-start-bar";
+import type { Preset } from "../lib/presets";
 
 interface TimerDisplayProps {
   meta: MetaState | null;
@@ -14,8 +17,11 @@ interface TimerDisplayProps {
   tagInputOpen: boolean;
   stopConfirmOpen: boolean;
   hintDismissed: boolean;
+  presets: Preset[];
   onTagConfirm: (tags: string[]) => void;
   onTagCancel: () => void;
+  onTagsChange: (tags: string[]) => void;
+  onLoadPreset: (preset: Preset) => void;
 }
 
 export function TimerDisplay({
@@ -26,8 +32,11 @@ export function TimerDisplay({
   tagInputOpen,
   stopConfirmOpen,
   hintDismissed,
+  presets,
   onTagConfirm,
   onTagCancel,
+  onTagsChange,
+  onLoadPreset,
 }: TimerDisplayProps) {
   const timerModes = useTimerModes();
   const labelFor = useMemo(() => {
@@ -116,8 +125,24 @@ export function TimerDisplay({
           </div>
         )}
 
-        {/* Tags */}
-        {!tagInputOpen && currentTags.length > 0 && (
+        {/* Idle layout: quick-start bar + inline tag autocomplete. When
+            running, tags are read-only pills (unless Ctrl+T opened the
+            legacy mid-session TagInput). */}
+        {isIdle && !tagInputOpen && (
+          <QuickStartBar presets={presets} onLoad={onLoadPreset} />
+        )}
+
+        {isIdle && !tagInputOpen && (
+          <TagAutocomplete
+            initial={stagedTags}
+            onChange={onTagsChange}
+            autoFocus={false}
+            placeholder="add tags…"
+          />
+        )}
+
+        {/* Running: read-only tag pills */}
+        {!isIdle && !tagInputOpen && currentTags.length > 0 && (
           <div className="flex flex-wrap justify-center gap-2 text-[11px]">
             {currentTags.map((t) => (
               <span
@@ -131,7 +156,7 @@ export function TimerDisplay({
           </div>
         )}
 
-        {/* Tag input */}
+        {/* Ctrl+T mid-session tag input (legacy inline text field) */}
         {tagInputOpen && (
           <TagInput
             initial={currentTags}
@@ -277,9 +302,9 @@ function HintLine({
       <div className="mt-1 text-[11px] lowercase tracking-wide text-[var(--text-muted)]">
         <span className="text-[var(--text-secondary)]">[Space]</span> start{" "}
         <span>·</span>{" "}
-        <span className="text-[var(--text-secondary)]">[Ctrl+T]</span> tags{" "}
+        <span className="text-[var(--text-secondary)]">[Ctrl+P]</span> commands{" "}
         <span>·</span>{" "}
-        <span className="text-[var(--text-secondary)]">[Ctrl+1/2/3]</span> mode
+        <span className="text-[var(--text-secondary)]">[Ctrl+,]</span> settings
       </div>
     );
   }

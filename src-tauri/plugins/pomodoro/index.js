@@ -51,6 +51,33 @@ flint.on("session:complete", function () {
   transitioning = false;
 });
 
+// Commands: discoverable actions published to the palette (Ctrl+P).
+if (typeof flint.registerCommand === "function") {
+  flint.registerCommand({
+    id: "pomodoro:skip-interval",
+    name: "Pomodoro: skip to next interval",
+    icon: "»",
+    category: "pomodoro",
+    callback: function () {
+      safeInvoke(function () {
+        return flint.nextInterval();
+      }, "skip-interval");
+    },
+  });
+
+  flint.registerCommand({
+    id: "pomodoro:reset-cycle",
+    name: "Pomodoro: reset cycle (stop session)",
+    icon: "⟲",
+    category: "pomodoro",
+    callback: function () {
+      safeInvoke(function () {
+        return flint.stopSession();
+      }, "reset-cycle");
+    },
+  });
+}
+
 flint.on("interval:end", function (payload) {
   if (transitioning) return;
   transitioning = true;

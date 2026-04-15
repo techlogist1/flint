@@ -3,7 +3,9 @@ mod commands;
 mod config;
 mod overlay;
 mod plugins;
+mod presets;
 mod storage;
+mod tags;
 mod timer;
 mod tray;
 
@@ -11,7 +13,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cache::CacheState;
-use commands::{AppStateStore, ConfigState, EngineState, PluginRegistry};
+use commands::{AppStateStore, ConfigState, EngineState, PluginRegistry, SessionOverridesState};
+use tags::TagIndex;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use timer::{TimerState, TimerStatus};
 use tokio::time::MissedTickBehavior;
@@ -282,6 +285,21 @@ pub fn run() {
 
     let recovery_writer = storage::spawn_recovery_writer();
 
+    // Tag index: scan all session files once at startup so the autocomplete
+    // dropdown is populated on first render. Updated incrementally when a
+    // session is finalised (commands::finalize_session).
+    let tag_index = TagIndex::new_empty();
+    {
+        let initial_tags = tags::scan_all_sessions();
+        if let Ok(mut guard) = tag_index.0.lock() {
+            *guard = initial_tags;
+        }
+    }
+    println!(
+        "[flint] tag index seeded with {} tags",
+        tag_index.0.lock().map(|g| g.len()).unwrap_or(0)
+    );
+
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
         .manage(ConfigState(Mutex::new(cfg)))
@@ -289,6 +307,8 @@ pub fn run() {
         .manage(cache_state)
         .manage(AppStateStore(Mutex::new(app_state)))
         .manage(recovery_writer)
+        .manage(SessionOverridesState::new_empty())
+        .manage(tag_index)
         .setup(move |app| {
             if let Err(e) = tray::setup(app.handle()) {
                 eprintln!("[flint] tray setup failed: {}", e);
@@ -406,6 +426,12 @@ pub fn run() {
             commands::quit_app,
             commands::open_data_folder,
             commands::export_all_sessions,
+            commands::list_presets,
+            commands::save_preset,
+            commands::delete_preset,
+            commands::load_preset,
+            commands::touch_preset,
+            commands::get_known_tags,
             overlay::overlay_show,
             overlay::overlay_hide,
             overlay::overlay_toggle,
