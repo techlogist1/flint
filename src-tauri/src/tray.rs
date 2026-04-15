@@ -237,5 +237,10 @@ pub fn quit_from_tray(app: &AppHandle) {
             }
         }
     }
+    // Tear the overlay down before app.exit() so its Win32 window class is
+    // unregistered before the main window — reversing this order on Windows
+    // intermittently trips a Chrome_WidgetWin_0 unregister crash
+    // (exit code 0xcfffffff) when the overlay is still open at quit time.
+    overlay::close_overlay_if_open(app);
     app.exit(0);
 }

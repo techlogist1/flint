@@ -710,6 +710,11 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
+    // Close the overlay before app.exit() so its Win32 window class tears
+    // down before the main window — the reverse order intermittently trips
+    // a Chrome_WidgetWin_0 unregister crash on Windows when the overlay is
+    // still open at quit time.
+    crate::overlay::close_overlay_if_open(&app);
     app.exit(0);
 }
 

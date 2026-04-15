@@ -23,6 +23,17 @@ interface PluginNotification {
   message: string;
 }
 
+// Cap on how many notifications can be visible at once. A 4th push drops the
+// oldest so rapid-fire plugins (e.g. Pomodoro cycling short intervals during
+// testing) can't stack to infinity and crash the app.
+const NOTIFICATION_STACK_LIMIT = 3;
+// Same-message dedup window. Re-sending an identical (pluginId, message)
+// within this window is a no-op — prevents a misfiring plugin from flooding
+// the UI with duplicates.
+const NOTIFICATION_DEDUP_MS = 10_000;
+// Default auto-dismiss. Plugins may override via options.duration.
+const NOTIFICATION_DEFAULT_DURATION_MS = 5_000;
+
 interface SlotEntry {
   pluginId: string;
   html: string;
@@ -71,6 +82,12 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   >(new Map());
   // event name → active Tauri unlisten function (or cancel-sentinel for pending)
   const unlistenersRef = useRef<Map<string, UnlistenFn>>(new Map());
+  // Last-seen timestamps keyed by `${pluginId}::${message}`. Pruned opportunistically
+  // in showNotification so the map does not grow without bound.
+  const notifyDedupRef = useRef<Map<string, number>>(new Map());
+  // Active auto-dismiss timers, keyed by notification id, so we can cancel
+  // them if the user dismisses manually or the stack-limit drops them first.
+  const notifyTimersRef = useRef<Map<string, number>>(new Map());
 
   const dispatchEvent = useCallback((event: string, payload: unknown) => {
     const byPlugin = subscribersRef.current.get(event);
@@ -150,25 +167,68 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const clearNotifyTimer = useCallback((id: string) => {
+    const existing = notifyTimersRef.current.get(id);
+    if (existing != null) {
+      window.clearTimeout(existing);
+      notifyTimersRef.current.delete(id);
+    }
+  }, []);
+
   const showNotification = useCallback(
     (
       pluginId: string,
       message: string,
       options?: { duration?: number },
     ) => {
+      const now = Date.now();
+      const dedupKey = `${pluginId}::${message}`;
+      const lastSeen = notifyDedupRef.current.get(dedupKey);
+      if (lastSeen != null && now - lastSeen < NOTIFICATION_DEDUP_MS) {
+        // Same notification fired recently — drop it so a misbehaving plugin
+        // cannot stack identical toasts on top of each other.
+        return;
+      }
+      // Opportunistic prune: drop dedup entries older than the window so the
+      // map stays bounded over long sessions.
+      for (const [k, ts] of notifyDedupRef.current) {
+        if (now - ts >= NOTIFICATION_DEDUP_MS) {
+          notifyDedupRef.current.delete(k);
+        }
+      }
+      notifyDedupRef.current.set(dedupKey, now);
+
       const id = Math.random().toString(36).slice(2, 10);
-      const duration = options?.duration ?? 3000;
-      setNotifications((prev) => [...prev, { id, pluginId, message }]);
-      window.setTimeout(() => {
+      const duration = Math.max(
+        500,
+        options?.duration ?? NOTIFICATION_DEFAULT_DURATION_MS,
+      );
+      setNotifications((prev) => {
+        const next = [...prev, { id, pluginId, message }];
+        // Enforce the stack cap: drop the oldest entries and cancel their
+        // pending auto-dismiss timers so we don't race with them.
+        while (next.length > NOTIFICATION_STACK_LIMIT) {
+          const dropped = next.shift();
+          if (dropped) clearNotifyTimer(dropped.id);
+        }
+        return next;
+      });
+      const timerId = window.setTimeout(() => {
+        notifyTimersRef.current.delete(id);
         setNotifications((prev) => prev.filter((n) => n.id !== id));
       }, duration);
+      notifyTimersRef.current.set(id, timerId);
     },
-    [],
+    [clearNotifyTimer],
   );
 
-  const dismissNotification = useCallback((id: string) => {
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-  }, []);
+  const dismissNotification = useCallback(
+    (id: string) => {
+      clearNotifyTimer(id);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+    },
+    [clearNotifyTimer],
+  );
 
   const tearDown = useCallback(() => {
     for (const [, unlisten] of unlistenersRef.current) {
@@ -180,6 +240,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     }
     unlistenersRef.current.clear();
     subscribersRef.current.clear();
+    for (const [, timerId] of notifyTimersRef.current) {
+      window.clearTimeout(timerId);
+    }
+    notifyTimersRef.current.clear();
+    notifyDedupRef.current.clear();
   }, []);
 
   const reload = useCallback(async () => {

@@ -10,8 +10,8 @@
   --text-primary: #e0e0e0;
   --text-secondary: #888888;
   --text-muted: #555555;
-  --accent: #22c55e;
-  --accent-subtle: #22c55e22;
+  --accent: #16a34a;
+  --accent-subtle: #16a34a22;
   --success: #4ade80;
   --warning: #fbbf24;
   --danger: #ef4444;
@@ -44,13 +44,17 @@ body {
   -webkit-user-select: none;
 }
 
+/* Overlay window: the Tauri window itself is opaque (transparent: false in
+   overlay.rs) so the inner surface is responsible for the dark fill. Setting
+   the body and root explicitly avoids a flash of the OS default background
+   between window create and React mount. */
 body.flint-overlay-body {
-  background-color: transparent;
+  background-color: #1a1a1a;
 }
 
 body.flint-overlay-body,
 body.flint-overlay-body #root {
-  background-color: transparent;
+  background-color: #1a1a1a;
 }
 
 ::selection {

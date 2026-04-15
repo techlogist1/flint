@@ -21,7 +21,7 @@ import { StatsHeatmap } from "./stats-heatmap";
 
 type StatsTab = "today" | "week" | "month" | "map";
 
-const ACCENT = "#22c55e";
+const ACCENT = "#16a34a";
 const MUTED = "#555555";
 
 export function StatsDashboard() {

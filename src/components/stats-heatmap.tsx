@@ -138,14 +138,14 @@ function build(cells: HeatmapCell[]): {
 function cellColor(day: HeatmapCell | null, max: number): string {
   if (!day || day.focus_sec <= 0 || max <= 0) return "#2d2d2d";
   const ratio = Math.min(1, day.focus_sec / max);
-  if (ratio < 0.25) return "#22c55e40";
-  if (ratio < 0.5) return "#22c55e70";
-  if (ratio < 0.75) return "#22c55ea0";
-  return "#22c55e";
+  if (ratio < 0.25) return "#16a34a40";
+  if (ratio < 0.5) return "#16a34a70";
+  if (ratio < 0.75) return "#16a34aa0";
+  return "#16a34a";
 }
 
 function Legend() {
-  const levels = ["#2d2d2d", "#22c55e40", "#22c55e70", "#22c55ea0", "#22c55e"];
+  const levels = ["#2d2d2d", "#16a34a40", "#16a34a70", "#16a34aa0", "#16a34a"];
   return (
     <div className="flex items-center justify-end gap-1 text-[9px] text-[var(--text-muted)]">
       <span>less</span>

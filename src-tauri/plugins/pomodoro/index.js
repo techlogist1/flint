@@ -9,13 +9,13 @@ flint.on("interval:end", async (payload) => {
   const cfg = await flint.getConfig();
 
   if (payload.type === "focus") {
-    flint.showNotification("Focus done. Break time.", { duration: 4000 });
+    flint.showNotification("Focus done. Break time.", { duration: 5000 });
     await flint.nextInterval();
     if (!cfg.auto_start_breaks) {
       await flint.pauseSession();
     }
   } else if (payload.type === "break") {
-    flint.showNotification("Break over. Back to focus.", { duration: 4000 });
+    flint.showNotification("Break over. Back to focus.", { duration: 5000 });
     await flint.nextInterval();
     if (!cfg.auto_start_focus) {
       await flint.pauseSession();

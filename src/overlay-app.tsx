@@ -14,70 +14,60 @@ import { fallbackModeLabel } from "./lib/types";
 
 type ExpandedState = "collapsed" | "expanded";
 
-const COLLAPSE_FADE_MS = 100;
+// Inner-container dimensions. The Tauri window itself is fixed at WINDOW_W/H
+// in overlay.rs and never resizes — collapsed/expanded is purely a CSS
+// animation on this inner element. Native window resize on Windows was both
+// jank-prone (mid-animation reflow) and a Win32 crash vector
+// (Chrome_WidgetWin_0 unregister on rapid toggle).
+const COLLAPSED_W = 208;
+const COLLAPSED_H = 36;
+const EXPANDED_W = 272;
+const EXPANDED_H = 92;
 
-// Frosted glass surface for the pill and expanded views. Matches macOS widget
-// styling — dark translucent fill, backdrop blur, hairline border, no shadow.
-const GLASS_STYLE: CSSProperties = {
-  background: "rgba(30, 30, 30, 0.75)",
-  backdropFilter: "blur(16px) saturate(120%)",
-  WebkitBackdropFilter: "blur(16px) saturate(120%)",
-  border: "1px solid rgba(255, 255, 255, 0.08)",
-  boxShadow: "none",
-};
+const SURFACE_BG = "#1a1a1a";
+const SURFACE_BORDER = "1px solid rgba(255, 255, 255, 0.08)";
+// Smallest gap between consecutive expand/collapse toggles. Without this,
+// rapid click-spamming the pill stacks overlapping CSS transitions and the
+// container visibly stutters.
+const TOGGLE_DEBOUNCE_MS = 100;
 
 export function OverlayApp() {
   const { state, intervalRemaining } = useTimer();
   const [view, setView] = useState<ExpandedState>("collapsed");
-  // `collapsing` keeps the expanded content mounted with opacity 0 while the
-  // fade-out plays, then we resize and flip to the collapsed view.
-  const [collapsing, setCollapsing] = useState(false);
-  const collapseTimerRef = useRef<number | null>(null);
+  const isExpanded = view === "expanded";
 
-  // Guard against the focus-loss → collapse reaction that fires when the OS
-  // starts dragging the window. Without this, grabbing an expanded overlay
-  // collapses it mid-drag and the content disappears (the window still sits
-  // at expanded size, rendering a tiny pill in a large empty area).
-  const isDraggingRef = useRef(false);
-  const dragClearTimerRef = useRef<number | null>(null);
-
-  const expand = useCallback(() => {
-    if (collapseTimerRef.current != null) {
-      window.clearTimeout(collapseTimerRef.current);
-      collapseTimerRef.current = null;
-    }
-    setCollapsing(false);
-    setView("expanded");
-  }, []);
-
+  // Mirror `view` into a ref so async callbacks (focus-change, pointer-up)
+  // see the latest value without re-binding.
   const viewRef = useRef<ExpandedState>("collapsed");
   viewRef.current = view;
 
-  const collapse = useCallback(() => {
-    if (viewRef.current === "collapsed") return;
-    if (collapseTimerRef.current != null) return;
-    setCollapsing(true);
-    collapseTimerRef.current = window.setTimeout(() => {
-      setCollapsing(false);
-      setView("collapsed");
-      collapseTimerRef.current = null;
-    }, COLLAPSE_FADE_MS);
+  // Guard against the focus-loss → collapse reaction that fires when the OS
+  // starts dragging the window. Without this, grabbing an expanded overlay
+  // collapses it mid-drag and the content disappears.
+  const isDraggingRef = useRef(false);
+  const dragClearTimerRef = useRef<number | null>(null);
+
+  // Toggle debounce timestamp.
+  const lastToggleRef = useRef<number>(0);
+
+  const expand = useCallback(() => {
+    if (viewRef.current === "expanded") return;
+    const now = Date.now();
+    if (now - lastToggleRef.current < TOGGLE_DEBOUNCE_MS) return;
+    lastToggleRef.current = now;
+    setView("expanded");
   }, []);
 
-  // Tell the Rust overlay to resize its native window whenever `view` flips.
-  // The actual resize is instant; the React content plays its fade in/out
-  // in the foreground.
-  useEffect(() => {
-    invoke("overlay_set_expanded", { expanded: view === "expanded" }).catch(
-      (e) => console.error("overlay_set_expanded failed", e),
-    );
-  }, [view]);
+  const collapse = useCallback(() => {
+    if (viewRef.current === "collapsed") return;
+    const now = Date.now();
+    if (now - lastToggleRef.current < TOGGLE_DEBOUNCE_MS) return;
+    lastToggleRef.current = now;
+    setView("collapsed");
+  }, []);
 
   useEffect(() => {
     return () => {
-      if (collapseTimerRef.current != null) {
-        window.clearTimeout(collapseTimerRef.current);
-      }
       if (dragClearTimerRef.current != null) {
         window.clearTimeout(dragClearTimerRef.current);
       }
@@ -121,10 +111,9 @@ export function OverlayApp() {
     window_
       .onMoved(() => {
         queueSavePosition();
-        // Treat every onMoved as "still dragging" — the OS fires these
-        // continuously during a drag and stops once the user lets go.
-        // Debounce the clear so the focus-change that arrives *after* the
-        // drag still sees the guard set.
+        // The OS fires onMoved continuously during a drag and stops once the
+        // user releases. Debounce the dragging-clear so the focus-change that
+        // arrives just after the drag still sees the guard set.
         if (isDraggingRef.current) {
           if (dragClearTimerRef.current != null) {
             window.clearTimeout(dragClearTimerRef.current);
@@ -189,7 +178,7 @@ export function OverlayApp() {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         if (!dragging && Date.now() - startTime < 500) {
-          if (view === "collapsed") {
+          if (viewRef.current === "collapsed") {
             expand();
           } else {
             collapse();
@@ -200,12 +189,12 @@ export function OverlayApp() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [view, expand, collapse],
+    [expand, collapse],
   );
 
   const dotClass =
     state?.status === "running"
-      ? "bg-[var(--success)]"
+      ? "bg-[var(--accent)]"
       : state?.status === "paused"
         ? "bg-[var(--warning)]"
         : "bg-[var(--text-muted)]";
@@ -256,102 +245,115 @@ export function OverlayApp() {
     }
   }, []);
 
-  const isExpanded = view === "expanded";
-  const showingExpandedContent = isExpanded;
-  const expandedOpacity = collapsing ? 0 : 1;
-  // Fade content in after the window finishes resizing on the OS side;
-  // fade it out immediately when collapsing begins.
-  const expandedDelay = collapsing ? "0ms" : "100ms";
+  // Container size + radius are CSS-animated. Faster ease-in on collapse so
+  // the pill snaps back crisply; slower cubic-bezier on expand so the
+  // expanded content has visual room to fade in (see opacity delays below).
+  const containerTransition = isExpanded
+    ? "width 300ms cubic-bezier(0.4, 0, 0.2, 1), height 300ms cubic-bezier(0.4, 0, 0.2, 1), border-radius 300ms cubic-bezier(0.4, 0, 0.2, 1)"
+    : "width 200ms ease-in, height 200ms ease-in, border-radius 200ms ease-in";
+
+  const containerStyle: CSSProperties = {
+    background: SURFACE_BG,
+    border: SURFACE_BORDER,
+    width: isExpanded ? EXPANDED_W : COLLAPSED_W,
+    height: isExpanded ? EXPANDED_H : COLLAPSED_H,
+    borderRadius: isExpanded ? 12 : 9999,
+    transition: containerTransition,
+    willChange: "width, height, border-radius",
+  };
 
   return (
     <div
-      className="flex h-screen w-screen items-stretch justify-stretch p-1"
+      className="flex h-screen w-screen items-center justify-center"
+      style={{ background: SURFACE_BG }}
       onPointerDown={onPointerDown}
     >
-      <div
-        className="flex w-full flex-col overflow-hidden"
-        style={{
-          ...GLASS_STYLE,
-          borderRadius: isExpanded ? 12 : 9999,
-          transition: "border-radius 180ms ease-out",
-        }}
-      >
-        {showingExpandedContent ? (
-          <div
-            className="flex h-full flex-col gap-1.5 px-3 py-2"
-            style={{
-              opacity: expandedOpacity,
-              transition: `opacity ${COLLAPSE_FADE_MS}ms ease-out`,
-              transitionDelay: expandedDelay,
-            }}
-          >
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`}
-              />
-              <span className="font-mono text-[18px] tabular-nums text-[var(--text-primary)]">
-                {displayTime}
-              </span>
-              <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
-                {modeLabel}
-                {intervalLabel ? ` · ${intervalLabel}` : ""}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
-                {progressPct != null && (
-                  <div
-                    className="h-full bg-[var(--accent)] transition-[width] duration-200 ease-out"
-                    style={{ width: `${progressPct}%` }}
-                  />
-                )}
-              </div>
-              {state && state.questions_done > 0 && (
-                <span className="font-mono text-[10px] text-[var(--text-secondary)]">
-                  Q: {state.questions_done}
-                </span>
-              )}
-            </div>
-            <div className="mt-1 flex items-center gap-1.5" data-no-drag>
-              <OverlayButton
-                disabled={!state || state.status === "idle"}
-                onClick={onTogglePlay}
-                title={state?.status === "running" ? "Pause" : "Resume"}
-              >
-                {state?.status === "running" ? <PauseIcon /> : <PlayIcon />}
-              </OverlayButton>
-              <OverlayButton
-                disabled={!state || state.status === "idle"}
-                onClick={onStop}
-                title="Stop session"
-                variant="danger"
-              >
-                <StopIcon />
-              </OverlayButton>
-              <button
-                data-no-drag
-                onClick={onOpenMain}
-                className="ml-auto rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[10px] uppercase tracking-wider text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-              >
-                Open Flint
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div
-            className="flex h-full items-center gap-2.5 px-3 animate-[flint-fadein_150ms_ease-out]"
-          >
+      <div className="relative overflow-hidden" style={containerStyle}>
+        {/* Expanded layer — full content with controls. */}
+        <div
+          className="absolute inset-0 flex flex-col gap-1.5 px-3 py-2"
+          style={{
+            opacity: isExpanded ? 1 : 0,
+            transition: isExpanded
+              ? "opacity 200ms ease-out 100ms"
+              : "opacity 100ms ease-out",
+            pointerEvents: isExpanded ? "auto" : "none",
+          }}
+        >
+          <div className="flex items-center gap-2.5">
             <span
-              className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-150 ease-out ${dotClass}`}
+              className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`}
             />
-            <span className="font-mono text-[15px] tabular-nums text-[var(--text-primary)]">
+            <span className="font-mono text-[18px] tabular-nums text-[var(--accent)]">
               {displayTime}
             </span>
-            <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-              Flint
+            <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
+              {modeLabel}
+              {intervalLabel ? ` · ${intervalLabel}` : ""}
             </span>
           </div>
-        )}
+          <div className="flex items-center gap-2">
+            <div className="h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
+              {progressPct != null && (
+                <div
+                  className="h-full bg-[var(--accent)] transition-[width] duration-200 ease-out"
+                  style={{ width: `${progressPct}%` }}
+                />
+              )}
+            </div>
+            {state && state.questions_done > 0 && (
+              <span className="font-mono text-[10px] text-[var(--text-secondary)]">
+                Q: {state.questions_done}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex items-center gap-1.5" data-no-drag>
+            <OverlayButton
+              disabled={!state || state.status === "idle"}
+              onClick={onTogglePlay}
+              title={state?.status === "running" ? "Pause" : "Resume"}
+            >
+              {state?.status === "running" ? <PauseIcon /> : <PlayIcon />}
+            </OverlayButton>
+            <OverlayButton
+              disabled={!state || state.status === "idle"}
+              onClick={onStop}
+              title="Stop session"
+              variant="danger"
+            >
+              <StopIcon />
+            </OverlayButton>
+            <button
+              data-no-drag
+              onClick={onOpenMain}
+              className="ml-auto rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[10px] uppercase tracking-wider text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+            >
+              Open Flint
+            </button>
+          </div>
+        </div>
+
+        {/* Collapsed layer — pill content (status dot + time + label). */}
+        <div
+          className="absolute inset-0 flex items-center gap-2.5 px-3"
+          style={{
+            opacity: isExpanded ? 0 : 1,
+            transition: isExpanded
+              ? "opacity 80ms ease-out"
+              : "opacity 150ms ease-out 150ms",
+            pointerEvents: isExpanded ? "none" : "auto",
+          }}
+        >
+          <span
+            className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-150 ease-out ${dotClass}`}
+          />
+          <span className="font-mono text-[15px] tabular-nums text-[var(--accent)]">
+            {displayTime}
+          </span>
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            Flint
+          </span>
+        </div>
       </div>
     </div>
   );

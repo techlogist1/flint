@@ -281,6 +281,12 @@ pub fn run() {
                             .map(|c| c.tray.close_to_tray)
                             .unwrap_or(true);
                         if !close_to_tray {
+                            // Allow the main window to close, but tear the
+                            // overlay down first so its Win32 window class
+                            // unregisters before the main window — reversing
+                            // the order intermittently crashes the app with
+                            // Chrome_WidgetWin_0 on Windows.
+                            overlay::close_overlay_if_open(&app_handle);
                             return;
                         }
                         api.prevent_close();
@@ -355,7 +361,6 @@ pub fn run() {
             overlay::overlay_show,
             overlay::overlay_hide,
             overlay::overlay_toggle,
-            overlay::overlay_set_expanded,
             overlay::overlay_save_position,
             overlay::overlay_move_to,
         ])
