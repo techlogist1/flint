@@ -16,6 +16,8 @@ pub struct ConfigSchemaField {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
 }
 
@@ -292,12 +294,13 @@ mod tests {
             .find(|p| p.manifest.id == "pomodoro")
             .expect("pomodoro missing");
         for key in [
-            "focus_min",
-            "break_min",
-            "long_break_min",
+            "focus_duration",
+            "break_duration",
+            "long_break_duration",
             "cycles_before_long",
             "auto_start_breaks",
             "auto_start_focus",
+            "notify_sound",
         ] {
             assert!(
                 pom.manifest.config_schema.contains_key(key),

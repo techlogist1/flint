@@ -94,23 +94,33 @@ impl Default for Keybindings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Pomodoro {
-    pub focus_min: u32,
-    pub break_min: u32,
-    pub long_break_min: u32,
+    // Durations are stored as decimal minutes so the Pomodoro plugin can
+    // configure sub-minute intervals (e.g. 0.5 = 30s) for testing. serde
+    // aliases accept the legacy `focus_min` / `break_min` / `long_break_min`
+    // field names from older config.toml files so a user upgrading from a
+    // previous build doesn't lose their settings.
+    #[serde(alias = "focus_min")]
+    pub focus_duration: f64,
+    #[serde(alias = "break_min")]
+    pub break_duration: f64,
+    #[serde(alias = "long_break_min")]
+    pub long_break_duration: f64,
     pub cycles_before_long: u32,
     pub auto_start_breaks: bool,
     pub auto_start_focus: bool,
+    pub notify_sound: bool,
 }
 
 impl Default for Pomodoro {
     fn default() -> Self {
         Self {
-            focus_min: 25,
-            break_min: 5,
-            long_break_min: 15,
+            focus_duration: 25.0,
+            break_duration: 5.0,
+            long_break_duration: 15.0,
             cycles_before_long: 4,
             auto_start_breaks: true,
             auto_start_focus: false,
+            notify_sound: false,
         }
     }
 }

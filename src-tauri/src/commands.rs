@@ -10,12 +10,32 @@ use chrono::Utc;
 use rand::Rng;
 use serde_json::{Map, Value};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct EngineState(pub Mutex<TimerState>);
 pub struct ConfigState(pub Mutex<Config>);
 pub struct PluginRegistry(pub Mutex<Vec<LoadedPlugin>>);
 pub struct AppStateStore(pub Mutex<AppState>);
+
+/// FIX 1: minimum gap between two consecutive interval transitions. Any
+/// `next_interval` call that arrives inside this window after the last
+/// successful transition is silently dropped. This is a hard safety net
+/// against a plugin (or queued-up events after an alt-tab) firing
+/// transitions faster than the user could possibly intend.
+const INTERVAL_TRANSITION_COOLDOWN: Duration = Duration::from_millis(2000);
+
+/// Convert a decimal-minute duration (as supplied by the Pomodoro plugin
+/// config) into whole seconds for the engine. Clamped to 1 second minimum
+/// so a hand-edited `focus_duration = 0` cannot livelock the tick loop.
+fn minutes_to_sec(min: f64) -> u64 {
+    let s = (min * 60.0).round();
+    if s.is_finite() && s > 0.0 {
+        (s as u64).max(1)
+    } else {
+        1
+    }
+}
 
 fn generate_id() -> String {
     let n: u32 = rand::thread_rng().gen();
@@ -24,7 +44,7 @@ fn generate_id() -> String {
 
 fn build_first_interval(mode: &str, config: &Config) -> Interval {
     let target = match mode {
-        "pomodoro" => Some(u64::from(config.pomodoro.focus_min) * 60),
+        "pomodoro" => Some(minutes_to_sec(config.pomodoro.focus_duration)),
         "countdown" => Some(u64::from(config.core.countdown_default_min) * 60),
         _ => None,
     };
@@ -252,6 +272,24 @@ pub fn next_interval(
     if state.status == TimerStatus::Idle {
         return Err("no active session".into());
     }
+
+    // FIX 1: hard rate limit. If the last interval transition happened less
+    // than 2 seconds ago, silently accept the call without doing anything —
+    // this prevents the Pomodoro plugin from stacking rapid-fire transitions
+    // if events queue up during an alt-tab or under contention. Returning
+    // Ok keeps the plugin's await-chain from blowing up; the UI is
+    // unaffected because the state didn't change.
+    let now = Instant::now();
+    if let Some(last) = state.last_interval_transition_at {
+        if now.duration_since(last) < INTERVAL_TRANSITION_COOLDOWN {
+            eprintln!(
+                "[flint] interval transition rate-limited, skipping (gap = {:?})",
+                now.duration_since(last)
+            );
+            return Ok(state.clone());
+        }
+    }
+
     let config = config.0.lock().map_err(|e| e.to_string())?;
     let Some(current) = state.current_interval.take() else {
         return Err("no current interval".into());
@@ -279,15 +317,15 @@ pub fn next_interval(
                     && focus_count > 0
                     && focus_count % config.pomodoro.cycles_before_long == 0;
                 let target_min = if long {
-                    config.pomodoro.long_break_min
+                    config.pomodoro.long_break_duration
                 } else {
-                    config.pomodoro.break_min
+                    config.pomodoro.break_duration
                 };
                 Interval {
                     interval_type: "break".into(),
                     start_sec: next_start_sec,
                     elapsed_sec: 0,
-                    target_sec: Some(u64::from(target_min) * 60),
+                    target_sec: Some(minutes_to_sec(target_min)),
                     ended_emitted: false,
                 }
             } else {
@@ -295,7 +333,7 @@ pub fn next_interval(
                     interval_type: "focus".into(),
                     start_sec: next_start_sec,
                     elapsed_sec: 0,
-                    target_sec: Some(u64::from(config.pomodoro.focus_min) * 60),
+                    target_sec: Some(minutes_to_sec(config.pomodoro.focus_duration)),
                     ended_emitted: false,
                 }
             }
@@ -312,6 +350,7 @@ pub fn next_interval(
     let nt = next.interval_type.clone();
     let ntarget = next.target_sec;
     state.current_interval = Some(next);
+    state.last_interval_transition_at = Some(now);
 
     recovery.send_state(&state);
 

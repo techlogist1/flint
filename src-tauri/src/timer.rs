@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +35,14 @@ pub struct TimerState {
     pub completed_intervals: Vec<Interval>,
     #[serde(skip)]
     pub recovery_pending: bool,
+    // FIX 1: rate-limit guard for interval transitions — set on each
+    // successful `next_interval` and checked on entry to reject re-entrant
+    // calls from a misbehaving plugin that stacks up transition events.
+    // Instant doesn't serialise, so it's runtime-only and lost on restart,
+    // which is fine: after a relaunch there's no rapid-fire loop to guard
+    // against.
+    #[serde(skip)]
+    pub last_interval_transition_at: Option<Instant>,
 }
 
 impl TimerState {
@@ -49,6 +58,7 @@ impl TimerState {
             current_interval: None,
             completed_intervals: Vec::new(),
             recovery_pending: false,
+            last_interval_transition_at: None,
         }
     }
 

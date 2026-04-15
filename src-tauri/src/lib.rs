@@ -8,12 +8,19 @@ mod timer;
 mod tray;
 
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cache::CacheState;
 use commands::{AppStateStore, ConfigState, EngineState, PluginRegistry};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use timer::{TimerState, TimerStatus};
+use tokio::time::MissedTickBehavior;
+
+/// FIX 7: warn loudly if a single tick body takes longer than this. Holding
+/// the engine mutex + emitting IPC + updating the tray should be far under
+/// 10 ms on a healthy system; anything above means we've regressed on the
+/// no-disk-I/O-on-tick invariant (P-C1) and need to investigate.
+const TICK_SLOW_WARN_THRESHOLD: Duration = Duration::from_millis(10);
 
 fn tick_once(app: &AppHandle) {
     // P-H1: snapshot `show_timer_in_tray` from the config lock *before*
@@ -342,10 +349,24 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                // FIX 7: if a tick body stalls past its 1 s slot, skip the
+                // backlog instead of firing a burst of catch-up ticks. The
+                // engine is wall-clock-driven (not tick-counter-driven), so
+                // a skipped tick just means the next tick picks up where we
+                // left off — no state is lost.
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                 ticker.tick().await;
                 loop {
                     ticker.tick().await;
+                    let started = Instant::now();
                     tick_once(&handle);
+                    let elapsed = started.elapsed();
+                    if elapsed > TICK_SLOW_WARN_THRESHOLD {
+                        eprintln!(
+                            "[flint] slow tick: body took {:?} (> {:?})",
+                            elapsed, TICK_SLOW_WARN_THRESHOLD
+                        );
+                    }
                 }
             });
             Ok(())

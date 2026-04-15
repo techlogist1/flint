@@ -132,12 +132,51 @@ function activateMetaBridge(): void {
 }
 
 let tickBridgeUnlisten: Promise<UnlistenFn> | null = null;
+// FIX 8: when the window is backgrounded (document.hidden === true) we
+// stash the latest tick here instead of applying it. On visibility return
+// we process exactly one catch-up tick (the newest seen while hidden) and
+// then resume normal 1 Hz processing. Prevents the burst-reconciliation
+// that otherwise fires when Flint regains focus after being alt-tabbed
+// for minutes.
+let pendingHiddenTick: TickState | null = null;
+let visibilityListenerAttached = false;
+
+function onVisibilityChange(): void {
+  if (typeof document === "undefined") return;
+  if (!document.hidden && pendingHiddenTick) {
+    // Apply the freshest tick we saw while hidden. Consumers render the
+    // catch-up value, and subsequent ticks arrive normally.
+    tickSnapshot = pendingHiddenTick;
+    pendingHiddenTick = null;
+    emitTick();
+  }
+}
+
+function ensureVisibilityListener(): void {
+  if (visibilityListenerAttached) return;
+  if (typeof document === "undefined") return;
+  visibilityListenerAttached = true;
+  document.addEventListener("visibilitychange", onVisibilityChange);
+}
 
 function activateTickBridge(): void {
   if (tickBridgeUnlisten) return;
+  ensureVisibilityListener();
   tickBridgeUnlisten = listen<TickPayload>("session:tick", (evt) => {
     const { elapsed_sec, interval_elapsed, interval_remaining } = evt.payload;
-    tickSnapshot = { elapsed_sec, interval_elapsed, interval_remaining };
+    const next: TickState = {
+      elapsed_sec,
+      interval_elapsed,
+      interval_remaining,
+    };
+    // FIX 8: while hidden, just stash the newest tick. Do NOT touch
+    // tickSnapshot or call emitTick — React will not render anyway, and
+    // skipping the work here keeps the event loop from stacking up.
+    if (typeof document !== "undefined" && document.hidden) {
+      pendingHiddenTick = next;
+      return;
+    }
+    tickSnapshot = next;
     emitTick();
   });
 }
@@ -146,6 +185,7 @@ function deactivateTickBridge(): void {
   if (!tickBridgeUnlisten) return;
   const promise = tickBridgeUnlisten;
   tickBridgeUnlisten = null;
+  pendingHiddenTick = null;
   promise
     .then((fn) => fn())
     .catch((e) => console.error("unlisten session:tick failed", e));

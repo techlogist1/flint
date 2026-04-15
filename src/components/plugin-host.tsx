@@ -31,8 +31,14 @@ const NOTIFICATION_STACK_LIMIT = 3;
 // within this window is a no-op — prevents a misfiring plugin from flooding
 // the UI with duplicates.
 const NOTIFICATION_DEDUP_MS = 10_000;
-// Default auto-dismiss. Plugins may override via options.duration.
-const NOTIFICATION_DEFAULT_DURATION_MS = 5_000;
+// FIX 4: hard auto-dismiss timeout. Non-negotiable — plugins cannot override
+// this via `options.duration`. Keeps notifications ephemeral so a buggy
+// plugin cannot flood and pin the UI.
+const NOTIFICATION_AUTO_DISMISS_MS = 4_000;
+// FIX 3: hard timeout for a single plugin event callback. If a handler
+// takes longer than this, we log an error and move on so one slow plugin
+// cannot wedge the host.
+const PLUGIN_CALLBACK_TIMEOUT_MS = 5_000;
 
 interface SlotEntry {
   pluginId: string;
@@ -90,28 +96,73 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   // Active auto-dismiss timers, keyed by notification id, so we can cancel
   // them if the user dismisses manually or the stack-limit drops them first.
   const notifyTimersRef = useRef<Map<string, number>>(new Map());
+  // FIX 4: live count of visible notifications, mirrored from setNotifications.
+  // Read synchronously outside the updater to enforce the stack cap without
+  // relying on React Strict Mode double-invoking the state updater (which
+  // would corrupt an `accepted` flag captured in closure).
+  const notifyCountRef = useRef(0);
+  // FIX 4: master kill-switch for the notification system. Flipped false
+  // during plugin reload/tearDown so any in-flight notify call from an
+  // outgoing plugin is dropped before it touches React state. Prevents
+  // orphan toasts accumulating across a plugin reload.
+  const notificationsEnabledRef = useRef(true);
 
-  const dispatchEvent = useCallback((event: string, payload: unknown) => {
-    const byPlugin = subscribersRef.current.get(event);
-    if (!byPlugin) return;
-    for (const [pluginId, callbacks] of byPlugin) {
-      for (const cb of callbacks) {
-        try {
-          const result = cb(payload);
-          if (result && typeof (result as Promise<unknown>).catch === "function") {
-            (result as Promise<unknown>).catch((err) =>
+  /**
+   * FIX 3: run a plugin callback with a 5-second hard timeout. If it throws
+   * synchronously, rejects a promise, or never resolves, the host logs and
+   * moves on — a buggy plugin must never crash the app.
+   */
+  const safeCallPlugin = useCallback(
+    (pluginId: string, event: string, cb: PluginEventCallback, payload: unknown) => {
+      let settled = false;
+      const timeoutId = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.error(
+          `[plugin ${pluginId}] handler "${event}" timed out after ${PLUGIN_CALLBACK_TIMEOUT_MS}ms`,
+        );
+      }, PLUGIN_CALLBACK_TIMEOUT_MS);
+
+      const clear = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+      };
+
+      try {
+        const result = cb(payload);
+        if (result && typeof (result as Promise<unknown>).then === "function") {
+          (result as Promise<unknown>)
+            .catch((err) =>
               console.error(
                 `[plugin ${pluginId}] handler "${event}" rejected:`,
                 err,
               ),
-            );
-          }
-        } catch (e) {
-          console.error(`[plugin ${pluginId}] handler "${event}" threw:`, e);
+            )
+            .finally(clear);
+        } else {
+          clear();
+        }
+      } catch (err) {
+        clear();
+        console.error(`[plugin ${pluginId}] handler "${event}" threw:`, err);
+      }
+    },
+    [],
+  );
+
+  const dispatchEvent = useCallback(
+    (event: string, payload: unknown) => {
+      const byPlugin = subscribersRef.current.get(event);
+      if (!byPlugin) return;
+      for (const [pluginId, callbacks] of byPlugin) {
+        for (const cb of callbacks) {
+          safeCallPlugin(pluginId, event, cb, payload);
         }
       }
-    }
-  }, []);
+    },
+    [safeCallPlugin],
+  );
 
   const ensureListener = useCallback(
     (event: string) => {
@@ -178,11 +229,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   }, []);
 
   const showNotification = useCallback(
-    (
-      pluginId: string,
-      message: string,
-      options?: { duration?: number },
-    ) => {
+    (pluginId: string, message: string, _options?: { duration?: number }) => {
+      // FIX 4: master kill-switch — if notifications are disabled during a
+      // plugin reload, silently drop the call. Prevents orphan toasts.
+      if (!notificationsEnabledRef.current) return;
+
       const now = Date.now();
       const dedupKey = `${pluginId}::${message}`;
       const lastSeen = notifyDedupRef.current.get(dedupKey);
@@ -200,39 +251,40 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       }
       notifyDedupRef.current.set(dedupKey, now);
 
+      // FIX 4: enforce the hard stack cap BEFORE scheduling any timer.
+      // Reading notifyCountRef is safe under Strict Mode since it's not a
+      // state updater closure — the count is bumped outside the setter.
+      if (notifyCountRef.current >= NOTIFICATION_STACK_LIMIT) return;
+
       const id = Math.random().toString(36).slice(2, 10);
-      const duration = Math.max(
-        500,
-        options?.duration ?? NOTIFICATION_DEFAULT_DURATION_MS,
-      );
-      setNotifications((prev) => {
-        const next = [...prev, { id, pluginId, message }];
-        // Enforce the stack cap: drop the oldest entries and cancel their
-        // pending auto-dismiss timers so we don't race with them.
-        while (next.length > NOTIFICATION_STACK_LIMIT) {
-          const dropped = next.shift();
-          if (dropped) clearNotifyTimer(dropped.id);
-        }
-        return next;
-      });
+      notifyCountRef.current += 1;
+      setNotifications((prev) => [...prev, { id, pluginId, message }]);
+      // FIX 4: hardcoded 4-second auto-dismiss. Plugins cannot override.
       const timerId = window.setTimeout(() => {
         notifyTimersRef.current.delete(id);
+        notifyCountRef.current = Math.max(0, notifyCountRef.current - 1);
         setNotifications((prev) => prev.filter((n) => n.id !== id));
-      }, duration);
+      }, NOTIFICATION_AUTO_DISMISS_MS);
       notifyTimersRef.current.set(id, timerId);
     },
-    [clearNotifyTimer],
+    [],
   );
 
   const dismissNotification = useCallback(
     (id: string) => {
       clearNotifyTimer(id);
+      notifyCountRef.current = Math.max(0, notifyCountRef.current - 1);
       setNotifications((prev) => prev.filter((n) => n.id !== id));
     },
     [clearNotifyTimer],
   );
 
   const tearDown = useCallback(() => {
+    // FIX 4: close the gate before we start ripping state out so any
+    // in-flight notify() call from a plugin we're about to unload is
+    // silently dropped. reload() will flip it back on once the new
+    // plugin set has finished initialising.
+    notificationsEnabledRef.current = false;
     for (const [, unlisten] of unlistenersRef.current) {
       try {
         unlisten();
@@ -247,6 +299,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     }
     notifyTimersRef.current.clear();
     notifyDedupRef.current.clear();
+    notifyCountRef.current = 0;
     // P-H2: drop any toasts still on screen so a reload (e.g. enabling/
     // disabling a plugin mid-Pomodoro) cannot leave orphan notifications
     // whose auto-dismiss timers were just cancelled above.
@@ -262,6 +315,9 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       list = await invoke<PluginDescriptor[]>("list_plugins");
     } catch (e) {
       console.error("[plugin-host] list_plugins failed:", e);
+      // FIX 4: open the notification gate even on error so the rest of
+      // the app can still surface host-side toasts (error boundary, etc).
+      notificationsEnabledRef.current = true;
       setLoaded(true);
       return;
     }
@@ -283,6 +339,8 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         );
       }
     }
+    // FIX 4: plugins are initialised — safe to accept notifications again.
+    notificationsEnabledRef.current = true;
     setLoaded(true);
   }, [renderSlot, showNotification, subscribe, tearDown]);
 

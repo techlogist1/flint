@@ -84,7 +84,7 @@ export function TimerDisplay({
           <div className="text-sm text-[var(--text-secondary)]">
             {modeDescription(
               displayMode,
-              config?.pomodoro.focus_min ?? 25,
+              config?.pomodoro.focus_duration ?? 25,
               config?.core.countdown_default_min ?? 60,
             )}
           </div>
@@ -294,7 +294,9 @@ function computeDisplayTime(
   // Idle: show target duration for the selected mode (or 00:00 for stopwatch)
   if (isIdle) {
     if (mode === "pomodoro") {
-      return formatTime((config?.pomodoro.focus_min ?? 25) * 60);
+      return formatTime(
+        Math.max(1, Math.round((config?.pomodoro.focus_duration ?? 25) * 60)),
+      );
     }
     if (mode === "countdown") {
       return formatTime((config?.core.countdown_default_min ?? 60) * 60);

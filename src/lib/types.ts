@@ -52,12 +52,13 @@ export interface Config {
     quick_tag: string;
   };
   pomodoro: {
-    focus_min: number;
-    break_min: number;
-    long_break_min: number;
+    focus_duration: number;
+    break_duration: number;
+    long_break_duration: number;
     cycles_before_long: number;
     auto_start_breaks: boolean;
     auto_start_focus: boolean;
+    notify_sound: boolean;
   };
   tray: {
     close_to_tray: boolean;

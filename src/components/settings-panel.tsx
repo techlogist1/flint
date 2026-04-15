@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Config } from "../lib/types";
 import { useTimerModes } from "./plugin-host";
 import { PluginSettingsSection } from "./plugin-settings";
+import { FlintSelect } from "./select";
 
 interface SettingsPanelProps {
   initial: Config;
@@ -76,24 +77,24 @@ export function SettingsPanel({
         <div className="mx-auto max-w-2xl space-y-8">
           <Section title="General">
             <Field label="Default mode">
-              <select
+              <FlintSelect
+                ariaLabel="Default mode"
                 value={draft.core.default_mode}
-                onChange={(e) =>
-                  patch("core", { ...draft.core, default_mode: e.target.value })
+                options={
+                  timerModes.length === 0
+                    ? [
+                        {
+                          value: draft.core.default_mode,
+                          label: "(no timer mode plugins enabled)",
+                        },
+                      ]
+                    : timerModes.map((m) => ({ value: m.id, label: m.label }))
                 }
-                className="px-2 py-1 text-xs"
-              >
-                {timerModes.length === 0 && (
-                  <option value={draft.core.default_mode}>
-                    (no timer mode plugins enabled)
-                  </option>
-                )}
-                {timerModes.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) =>
+                  patch("core", { ...draft.core, default_mode: v })
+                }
+                disabled={timerModes.length === 0}
+              />
             </Field>
           </Section>
 
@@ -146,21 +147,19 @@ export function SettingsPanel({
               }
             />
             <Field label="Default position">
-              <select
+              <FlintSelect
+                ariaLabel="Default overlay position"
                 value={draft.overlay.position}
-                onChange={(e) =>
-                  patch("overlay", {
-                    ...draft.overlay,
-                    position: e.target.value,
-                  })
+                options={[
+                  { value: "top-left", label: "Top left" },
+                  { value: "top-right", label: "Top right" },
+                  { value: "bottom-left", label: "Bottom left" },
+                  { value: "bottom-right", label: "Bottom right" },
+                ]}
+                onChange={(v) =>
+                  patch("overlay", { ...draft.overlay, position: v })
                 }
-                className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
-              >
-                <option value="top-left">Top left</option>
-                <option value="top-right">Top right</option>
-                <option value="bottom-left">Bottom left</option>
-                <option value="bottom-right">Bottom right</option>
-              </select>
+              />
             </Field>
             <Field label="Opacity">
               <div className="flex items-center gap-3">

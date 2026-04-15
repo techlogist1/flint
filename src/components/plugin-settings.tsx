@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { usePlugins } from "./plugin-host";
 import type { ConfigSchemaField, PluginDescriptor } from "../lib/plugins";
+import { FlintSelect } from "./select";
 
 interface PluginSettingsSectionProps {
   onConfigPersisted: () => Promise<void> | void;
@@ -233,6 +234,7 @@ function SchemaField({
             data-flint-input="true"
             min={field.min}
             max={field.max}
+            step={field.step ?? 1}
             value={numberDisplay}
             onChange={(e) => {
               const raw = Number(e.target.value);
@@ -259,18 +261,12 @@ function SchemaField({
           />
         )}
         {field.type === "select" && field.options && (
-          <select
-            id={`plugin-field-${fieldKey}`}
+          <FlintSelect
+            ariaLabel={field.label}
             value={String(value ?? field.options[0] ?? "")}
-            onChange={(e) => onChange(e.target.value)}
-            className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
-          >
-            {field.options.map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
-              </option>
-            ))}
-          </select>
+            options={field.options.map((opt) => ({ value: opt, label: opt }))}
+            onChange={(v) => onChange(v)}
+          />
         )}
         {pending && (
           <span className="text-[10px] text-[var(--text-muted)]">saving…</span>

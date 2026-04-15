@@ -6,6 +6,7 @@ export interface ConfigSchemaField {
   label: string;
   min?: number;
   max?: number;
+  step?: number;
   options?: string[];
 }
 
