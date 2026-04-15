@@ -43,6 +43,7 @@ pub fn start_session(
     tags: Vec<String>,
     engine: State<'_, EngineState>,
     config: State<'_, ConfigState>,
+    recovery: State<'_, storage::RecoveryWriter>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -67,7 +68,7 @@ pub fn start_session(
     state.current_interval = Some(interval);
     state.recovery_pending = false;
 
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
 
     app.emit(
         "session:start",
@@ -86,6 +87,7 @@ pub fn start_session(
 #[tauri::command]
 pub fn pause_session(
     engine: State<'_, EngineState>,
+    recovery: State<'_, storage::RecoveryWriter>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -93,7 +95,7 @@ pub fn pause_session(
         return Err("not running".into());
     }
     state.status = TimerStatus::Paused;
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
     app.emit(
         "session:pause",
         serde_json::json!({ "elapsed_sec": state.elapsed_sec }),
@@ -105,6 +107,7 @@ pub fn pause_session(
 #[tauri::command]
 pub fn resume_session(
     engine: State<'_, EngineState>,
+    recovery: State<'_, storage::RecoveryWriter>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -112,7 +115,7 @@ pub fn resume_session(
         return Err("not paused".into());
     }
     state.status = TimerStatus::Running;
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
     app.emit(
         "session:resume",
         serde_json::json!({ "elapsed_sec": state.elapsed_sec }),
@@ -151,7 +154,9 @@ pub(crate) fn finalize_session(
         }
     }
 
-    let _ = storage::delete_recovery();
+    // Recovery deletion is funneled through the background writer so it
+    // serialises with any in-flight snapshot (P-C1).
+    app.state::<storage::RecoveryWriter>().delete();
 
     let event = if completed {
         "session:complete"
@@ -199,6 +204,7 @@ pub fn cancel_session(
 #[tauri::command]
 pub fn mark_question(
     engine: State<'_, EngineState>,
+    recovery: State<'_, storage::RecoveryWriter>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -206,7 +212,7 @@ pub fn mark_question(
         return Err("no active session".into());
     }
     state.questions_done += 1;
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
     app.emit(
         "question:marked",
         serde_json::json!({ "total_questions": state.questions_done }),
@@ -239,6 +245,7 @@ pub fn get_timer_state(
 pub fn next_interval(
     engine: State<'_, EngineState>,
     config: State<'_, ConfigState>,
+    recovery: State<'_, storage::RecoveryWriter>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -306,7 +313,7 @@ pub fn next_interval(
     let ntarget = next.target_sec;
     state.current_interval = Some(next);
 
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
 
     app.emit(
         "interval:start",
@@ -321,13 +328,14 @@ pub fn next_interval(
 pub fn set_tags(
     tags: Vec<String>,
     engine: State<'_, EngineState>,
+    recovery: State<'_, storage::RecoveryWriter>,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
     if state.status == TimerStatus::Idle {
         return Err("no active session".into());
     }
     state.tags = tags;
-    storage::write_recovery(&state)?;
+    recovery.send_state(&state);
     Ok(state.clone())
 }
 
@@ -708,13 +716,29 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Shared shutdown logic used by both Ctrl+Q (`quit_app`) and the tray "Quit
+/// Flint" menu entry (`tray::quit_from_tray`). Finalises any running session
+/// as cancelled (S-C3 / C-H1), tears the overlay down before the main window
+/// (Win32 ordering), and flushes any pending recovery writes (P-C1) so the
+/// state on disk reflects what just happened. Caller is responsible for
+/// `app.exit(0)`.
+pub fn shutdown_with_finalize(app: &AppHandle) {
+    if let Ok(mut state) = app.state::<EngineState>().0.lock() {
+        if state.status != TimerStatus::Idle {
+            if let Err(e) = finalize_session(&mut state, app, false) {
+                eprintln!("[flint] finalize session on quit failed: {}", e);
+            }
+        }
+    }
+    // Block until any queued snapshot/delete has hit disk so the recovery
+    // file reflects the post-finalize state when the next launch reads it.
+    app.state::<storage::RecoveryWriter>().flush_blocking();
+    crate::overlay::close_overlay_if_open(app);
+}
+
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
-    // Close the overlay before app.exit() so its Win32 window class tears
-    // down before the main window — the reverse order intermittently trips
-    // a Chrome_WidgetWin_0 unregister crash on Windows when the overlay is
-    // still open at quit time.
-    crate::overlay::close_overlay_if_open(&app);
+    shutdown_with_finalize(&app);
     app.exit(0);
 }
 

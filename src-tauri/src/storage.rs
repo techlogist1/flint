@@ -3,6 +3,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
+use tokio::sync::mpsc as tokio_mpsc;
+use tokio::time::{sleep_until, Instant as TokioInstant};
 
 pub fn flint_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "could not resolve home directory".to_string())?;
@@ -71,31 +75,173 @@ pub struct RecoveryFile {
     pub last_saved_at: DateTime<Utc>,
 }
 
-pub fn write_recovery(state: &TimerState) -> Result<(), String> {
-    if state.status == TimerStatus::Idle || state.session_id.is_none() {
-        return Ok(());
+/// Cheap, owned copy of the timer fields the recovery file cares about.
+/// Built while the engine mutex is held (so the values are consistent), then
+/// shipped to the writer task for the actual fs::write — keeping the lock
+/// span microsecond-scale instead of disk-I/O-scale.
+#[derive(Debug, Clone)]
+pub struct RecoverySnapshot {
+    session_id: String,
+    started_at: DateTime<Utc>,
+    elapsed_sec: u64,
+    mode: String,
+    status: String,
+    tags: Vec<String>,
+    questions_done: u32,
+    intervals: Vec<Interval>,
+    current_interval: Option<Interval>,
+}
+
+impl RecoverySnapshot {
+    pub fn from_state(state: &TimerState) -> Option<Self> {
+        if state.status == TimerStatus::Idle {
+            return None;
+        }
+        let session_id = state.session_id.clone()?;
+        Some(Self {
+            session_id,
+            started_at: state.started_at.unwrap_or_else(Utc::now),
+            elapsed_sec: state.elapsed_sec,
+            mode: state.mode.clone(),
+            status: match state.status {
+                TimerStatus::Running => "running".into(),
+                TimerStatus::Paused => "paused".into(),
+                TimerStatus::Idle => "idle".into(),
+            },
+            tags: state.tags.clone(),
+            questions_done: state.questions_done,
+            intervals: state.completed_intervals.clone(),
+            current_interval: state.current_interval.clone(),
+        })
     }
-    let payload = RecoveryFile {
-        session_id: state.session_id.clone().unwrap(),
-        started_at: state.started_at.unwrap_or_else(Utc::now),
-        elapsed_sec: state.elapsed_sec,
-        mode: state.mode.clone(),
-        status: match state.status {
-            TimerStatus::Running => "running".into(),
-            TimerStatus::Paused => "paused".into(),
-            TimerStatus::Idle => "idle".into(),
-        },
-        tags: state.tags.clone(),
-        questions_done: state.questions_done,
-        intervals: state.completed_intervals.clone(),
-        current_interval: state.current_interval.clone(),
-        plugin_data: serde_json::json!({}),
-        last_saved_at: Utc::now(),
-    };
+
+    fn into_payload(self) -> RecoveryFile {
+        RecoveryFile {
+            session_id: self.session_id,
+            started_at: self.started_at,
+            elapsed_sec: self.elapsed_sec,
+            mode: self.mode,
+            status: self.status,
+            tags: self.tags,
+            questions_done: self.questions_done,
+            intervals: self.intervals,
+            current_interval: self.current_interval,
+            plugin_data: serde_json::json!({}),
+            last_saved_at: Utc::now(),
+        }
+    }
+}
+
+fn write_snapshot_to_disk(snapshot: RecoverySnapshot) -> Result<(), String> {
+    let payload = snapshot.into_payload();
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
     let path = recovery_path()?;
-    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))?;
-    Ok(())
+    fs::write(&path, json).map_err(|e| format!("fs::write {}: {}", path.display(), e))
+}
+
+/// Messages accepted by the background recovery writer. Snapshots are
+/// debounced; Delete clears the on-disk file and any pending snapshot; Flush
+/// drains the queue synchronously and acks via the std::sync channel so the
+/// shutdown path can wait for the final write to land.
+enum RecoveryMessage {
+    Snapshot(RecoverySnapshot),
+    Delete,
+    Flush(std_mpsc::Sender<()>),
+}
+
+/// Handle to the background recovery writer task. All production code paths
+/// that previously called `write_recovery` synchronously now send a snapshot
+/// here instead, so the engine mutex is released before any disk I/O.
+pub struct RecoveryWriter {
+    tx: tokio_mpsc::UnboundedSender<RecoveryMessage>,
+}
+
+impl RecoveryWriter {
+    /// Snapshot the state (cheap clone — must be called while the engine
+    /// mutex is held) and ship it to the writer task. No-op if the state is
+    /// idle. Non-blocking; the disk write happens on the writer task.
+    pub fn send_state(&self, state: &TimerState) {
+        if let Some(snapshot) = RecoverySnapshot::from_state(state) {
+            let _ = self.tx.send(RecoveryMessage::Snapshot(snapshot));
+        }
+    }
+
+    pub fn delete(&self) {
+        let _ = self.tx.send(RecoveryMessage::Delete);
+    }
+
+    /// Block until the writer has flushed any pending snapshot to disk. Used
+    /// from the shutdown paths (Ctrl+Q, tray Quit, Close-when-not-tray) so
+    /// the final state is persisted before `app.exit()`.
+    pub fn flush_blocking(&self) {
+        let (ack_tx, ack_rx) = std_mpsc::channel();
+        if self.tx.send(RecoveryMessage::Flush(ack_tx)).is_err() {
+            return;
+        }
+        let _ = ack_rx.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(500);
+
+pub fn spawn_recovery_writer() -> RecoveryWriter {
+    let (tx, mut rx) = tokio_mpsc::unbounded_channel::<RecoveryMessage>();
+    tauri::async_runtime::spawn(async move {
+        let mut latest: Option<RecoverySnapshot> = None;
+        let mut deadline: Option<TokioInstant> = None;
+        loop {
+            let msg = if let Some(d) = deadline {
+                tokio::select! {
+                    biased;
+                    msg = rx.recv() => msg,
+                    _ = sleep_until(d) => {
+                        if let Some(snapshot) = latest.take() {
+                            if let Err(e) = write_snapshot_to_disk(snapshot) {
+                                eprintln!("[flint] recovery write failed: {}", e);
+                            }
+                        }
+                        deadline = None;
+                        continue;
+                    }
+                }
+            } else {
+                rx.recv().await
+            };
+
+            let Some(msg) = msg else {
+                if let Some(snapshot) = latest.take() {
+                    if let Err(e) = write_snapshot_to_disk(snapshot) {
+                        eprintln!("[flint] recovery write on close failed: {}", e);
+                    }
+                }
+                return;
+            };
+
+            match msg {
+                RecoveryMessage::Snapshot(snapshot) => {
+                    latest = Some(snapshot);
+                    deadline = Some(TokioInstant::now() + RECOVERY_DEBOUNCE);
+                }
+                RecoveryMessage::Delete => {
+                    latest = None;
+                    deadline = None;
+                    if let Err(e) = delete_recovery() {
+                        eprintln!("[flint] recovery delete failed: {}", e);
+                    }
+                }
+                RecoveryMessage::Flush(ack) => {
+                    if let Some(snapshot) = latest.take() {
+                        if let Err(e) = write_snapshot_to_disk(snapshot) {
+                            eprintln!("[flint] recovery flush failed: {}", e);
+                        }
+                    }
+                    deadline = None;
+                    let _ = ack.send(());
+                }
+            }
+        }
+    });
+    RecoveryWriter { tx }
 }
 
 pub fn delete_recovery() -> Result<(), String> {
@@ -248,7 +394,9 @@ mod tests {
     #[test]
     fn recovery_roundtrip() {
         let state = sample_state();
-        write_recovery(&state).expect("write ok");
+        let snapshot =
+            RecoverySnapshot::from_state(&state).expect("running state yields snapshot");
+        write_snapshot_to_disk(snapshot).expect("write ok");
         let loaded = load_recovery().expect("load ok");
         assert_eq!(loaded.session_id, "deadbeef");
         assert_eq!(loaded.elapsed_sec, 42);

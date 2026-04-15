@@ -44,17 +44,13 @@ body {
   -webkit-user-select: none;
 }
 
-/* Overlay window: the Tauri window itself is opaque (transparent: false in
-   overlay.rs) so the inner surface is responsible for the dark fill. Setting
-   the body and root explicitly avoids a flash of the OS default background
-   between window create and React mount. */
-body.flint-overlay-body {
-  background-color: #1a1a1a;
-}
-
+/* Overlay window: the Tauri window itself is transparent (transparent: true
+   in overlay.rs), so the body and root must NOT paint a background — only
+   the inner pill/card container is visible on the desktop. The black-
+   rectangle bug came from leaving an opaque body background here. */
 body.flint-overlay-body,
 body.flint-overlay-body #root {
-  background-color: #1a1a1a;
+  background: transparent;
 }
 
 ::selection {

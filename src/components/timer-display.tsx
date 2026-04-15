@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Mode, TimerStateView, Config } from "../lib/types";
+import type { Mode, Config } from "../lib/types";
 import { fallbackModeLabel } from "../lib/types";
 import { formatTime, modeDescription } from "../lib/format";
+import { useTickState, type MetaState } from "../hooks/use-timer";
 import { useTimerModes } from "./plugin-host";
 import { TagInput } from "./tag-input";
 
 interface TimerDisplayProps {
-  state: TimerStateView | null;
-  intervalRemaining: number | null;
+  meta: MetaState | null;
   config: Config | null;
   selectedMode: Mode;
   stagedTags: string[];
@@ -19,8 +19,7 @@ interface TimerDisplayProps {
 }
 
 export function TimerDisplay({
-  state,
-  intervalRemaining,
+  meta,
   config,
   selectedMode,
   stagedTags,
@@ -37,7 +36,7 @@ export function TimerDisplay({
     return (id: string) => map.get(id) ?? fallbackModeLabel(id);
   }, [timerModes]);
 
-  if (!state) {
+  if (!meta) {
     return (
       <div className="flex flex-1 items-center justify-center text-[var(--text-muted)]">
         loading…
@@ -45,31 +44,25 @@ export function TimerDisplay({
     );
   }
 
-  const isIdle = state.status === "idle";
-  const isRunning = state.status === "running";
-  const isPaused = state.status === "paused";
+  const isIdle = meta.status === "idle";
+  const isRunning = meta.status === "running";
+  const isPaused = meta.status === "paused";
 
-  const displayMode = (isIdle ? selectedMode : (state.mode as Mode)) || "pomodoro";
+  const displayMode = (isIdle ? selectedMode : (meta.mode as Mode)) || "pomodoro";
 
-  const displayTime = computeDisplayTime(
-    state,
-    intervalRemaining,
-    displayMode,
-    config,
-  );
-
-  const progressPct = computeProgress(state, intervalRemaining);
-
-  const intervalLabel = state.current_interval?.type
-    ? state.current_interval.type.charAt(0).toUpperCase() +
-      state.current_interval.type.slice(1)
+  const intervalLabel = meta.current_interval?.type
+    ? meta.current_interval.type.charAt(0).toUpperCase() +
+      meta.current_interval.type.slice(1)
     : null;
+
+  const hasTarget = meta.current_interval?.target_sec != null;
+  const intervalTarget = meta.current_interval?.target_sec ?? null;
 
   return (
     <div className="relative flex flex-1 flex-col items-center justify-center px-6">
       <div className="flex flex-col items-center gap-4">
         <div className="flex items-center gap-3">
-          <StatusDot status={state.status} />
+          <StatusDot status={meta.status} />
           <span className="text-xs uppercase tracking-wider text-[var(--text-secondary)]">
             {isIdle
               ? labelFor(displayMode)
@@ -80,9 +73,12 @@ export function TimerDisplay({
           </span>
         </div>
 
-        <div className="font-mono text-[96px] leading-none tracking-tight tabular-nums text-[var(--text-primary)]">
-          {displayTime}
-        </div>
+        <TimerDigit
+          isIdle={isIdle}
+          hasTarget={hasTarget}
+          mode={displayMode}
+          config={config}
+        />
 
         {isIdle && (
           <div className="text-sm text-[var(--text-secondary)]">
@@ -94,26 +90,19 @@ export function TimerDisplay({
           </div>
         )}
 
-        {progressPct != null && !isIdle && (
+        {hasTarget && !isIdle && intervalTarget != null && (
           <div className="h-[3px] w-72 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
-            <div
-              className="h-full bg-[var(--accent)] transition-[width] duration-200 ease-out"
-              style={{ width: `${progressPct}%` }}
-            />
+            <ProgressBar target={intervalTarget} />
           </div>
         )}
 
-        {!isIdle && state.questions_done > 0 && (
-          <div className="font-mono text-sm text-[var(--text-secondary)]">
-            Q: {state.questions_done}
-          </div>
-        )}
+        {!isIdle && <QuestionsCount initial={meta.questions_done} />}
 
-        {/* Tags display (idle shows staged, active shows state.tags) */}
+        {/* Tags display (idle shows staged, active shows meta.tags) */}
         {!tagInputOpen &&
-          (isIdle ? stagedTags : state.tags).length > 0 && (
+          (isIdle ? stagedTags : meta.tags).length > 0 && (
             <div className="flex flex-wrap justify-center gap-1.5">
-              {(isIdle ? stagedTags : state.tags).map((t) => (
+              {(isIdle ? stagedTags : meta.tags).map((t) => (
                 <span
                   key={t}
                   className="rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)]"
@@ -127,7 +116,7 @@ export function TimerDisplay({
         {/* Inline tag input */}
         {tagInputOpen && (
           <TagInput
-            initial={isIdle ? stagedTags : state.tags}
+            initial={isIdle ? stagedTags : meta.tags}
             onConfirm={onTagConfirm}
             onCancel={onTagCancel}
           />
@@ -151,6 +140,75 @@ export function TimerDisplay({
       </div>
 
       <StopConfirmToast open={stopConfirmOpen} />
+    </div>
+  );
+}
+
+/**
+ * P-C2: subscribe to tick state in this leaf so the rest of TimerDisplay
+ * does not reconcile every second. Only this `<div>` re-renders on a tick.
+ */
+function TimerDigit({
+  isIdle,
+  hasTarget,
+  mode,
+  config,
+}: {
+  isIdle: boolean;
+  hasTarget: boolean;
+  mode: Mode;
+  config: Config | null;
+}) {
+  const tick = useTickState();
+  const displayTime = computeDisplayTime(
+    isIdle,
+    hasTarget,
+    tick.interval_remaining,
+    tick.elapsed_sec,
+    mode,
+    config,
+  );
+  return (
+    <div className="font-mono text-[96px] leading-none tracking-tight tabular-nums text-[var(--text-primary)]">
+      {displayTime}
+    </div>
+  );
+}
+
+/**
+ * V-H4: progress bar drives a `transform: scaleX(...)` instead of
+ * `width`, so the per-tick paint is GPU-composited and never triggers
+ * layout. Subscribes to tick locally so only this element re-renders.
+ */
+function ProgressBar({ target }: { target: number }) {
+  const tick = useTickState();
+  const remaining = tick.interval_remaining ?? target;
+  const ratio = target > 0 ? Math.max(0, Math.min(1, (target - remaining) / target)) : 0;
+  return (
+    <div
+      className="h-full origin-left bg-[var(--accent)]"
+      style={{
+        width: "100%",
+        transform: `scaleX(${ratio})`,
+        transition: "transform 200ms ease-out",
+        willChange: "transform",
+      }}
+    />
+  );
+}
+
+/**
+ * Question counter is meta-driven (only changes on Enter), but the parent
+ * `meta` object would re-render the whole TimerDisplay tree on a meta
+ * change. Splitting it out keeps the conditional render local. The `initial`
+ * prop only changes when meta does, which is exactly when we want this to
+ * update.
+ */
+function QuestionsCount({ initial }: { initial: number }) {
+  if (initial === 0) return null;
+  return (
+    <div className="font-mono text-sm text-[var(--text-secondary)]">
+      Q: {initial}
     </div>
   );
 }
@@ -190,7 +248,7 @@ function StopConfirmToast({ open }: { open: boolean }) {
           "transform 200ms ease-out, opacity 200ms ease-out",
       }}
     >
-      <div className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]/85 px-4 py-2 text-xs text-[var(--text-secondary)] backdrop-blur-sm">
+      <div className="flex w-full items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-xs text-[var(--text-secondary)]">
         <span>End session?</span>
         <span className="text-[var(--text-muted)]">·</span>
         <Kbd>Enter</Kbd>
@@ -203,7 +261,7 @@ function StopConfirmToast({ open }: { open: boolean }) {
   );
 }
 
-function StatusDot({ status }: { status: TimerStateView["status"] }) {
+function StatusDot({ status }: { status: MetaState["status"] }) {
   const color =
     status === "running"
       ? "bg-[var(--success)]"
@@ -226,13 +284,15 @@ function Kbd({ children }: { children: React.ReactNode }) {
 }
 
 function computeDisplayTime(
-  state: TimerStateView,
+  isIdle: boolean,
+  hasTarget: boolean,
   intervalRemaining: number | null,
+  elapsedSec: number,
   mode: Mode,
   config: Config | null,
 ): string {
   // Idle: show target duration for the selected mode (or 00:00 for stopwatch)
-  if (state.status === "idle") {
+  if (isIdle) {
     if (mode === "pomodoro") {
       return formatTime((config?.pomodoro.focus_min ?? 25) * 60);
     }
@@ -244,18 +304,8 @@ function computeDisplayTime(
 
   // Running/paused: pomodoro & countdown show remaining in current interval;
   // stopwatch shows total elapsed.
-  if (state.current_interval?.target_sec != null && intervalRemaining != null) {
+  if (hasTarget && intervalRemaining != null) {
     return formatTime(intervalRemaining);
   }
-  return formatTime(state.elapsed_sec);
-}
-
-function computeProgress(
-  state: TimerStateView,
-  intervalRemaining: number | null,
-): number | null {
-  const target = state.current_interval?.target_sec;
-  if (!target || intervalRemaining == null) return null;
-  const done = target - intervalRemaining;
-  return Math.max(0, Math.min(100, (done / target) * 100));
+  return formatTime(elapsedSec);
 }

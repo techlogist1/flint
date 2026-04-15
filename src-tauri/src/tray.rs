@@ -219,28 +219,9 @@ fn format_elapsed(sec: u64) -> String {
 }
 
 pub fn quit_from_tray(app: &AppHandle) {
-    // B-H2: If a session is running/paused when the user picks "Quit Flint"
-    // from the tray, we must finalize it (as cancelled) so the JSON session
-    // file is written to disk and recovery.json is cleaned up. Otherwise the
-    // focus block silently disappears and the session auto-resumes with a
-    // wrong elapsed on next launch.
-    let engine = app.state::<EngineState>();
-    let needs_finalize = engine
-        .0
-        .lock()
-        .map(|s| s.status != TimerStatus::Idle)
-        .unwrap_or(false);
-    if needs_finalize {
-        if let Ok(mut state) = engine.0.lock() {
-            if let Err(e) = commands::finalize_session(&mut state, app, false) {
-                eprintln!("[flint] finalize session on quit failed: {}", e);
-            }
-        }
-    }
-    // Tear the overlay down before app.exit() so its Win32 window class is
-    // unregistered before the main window — reversing this order on Windows
-    // intermittently trips a Chrome_WidgetWin_0 unregister crash
-    // (exit code 0xcfffffff) when the overlay is still open at quit time.
-    overlay::close_overlay_if_open(app);
+    // B-H2 / S-C3: shared shutdown logic with Ctrl+Q's quit_app — finalises
+    // any running session as cancelled, flushes the recovery writer, and
+    // tears the overlay down before the main window (Win32 ordering).
+    commands::shutdown_with_finalize(app);
     app.exit(0);
 }

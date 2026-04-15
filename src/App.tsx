@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useTimer } from "./hooks/use-timer";
+import { useMetaState } from "./hooks/use-timer";
 import { Sidebar } from "./components/sidebar";
 import { TimerDisplay } from "./components/timer-display";
 import { SettingsPanel } from "./components/settings-panel";
@@ -15,7 +15,10 @@ import type { Config, Mode, TimerModeInfo } from "./lib/types";
 type View = "timer" | "settings" | "session-detail";
 
 function AppShell() {
-  const { state, intervalRemaining } = useTimer();
+  // P-C2: AppShell only subscribes to the meta slice, so a 1Hz tick no
+  // longer reconciles this whole tree. TimerDisplay / StatusBar pull tick
+  // state internally via useTickState() in their leaf children.
+  const meta = useMetaState();
   const timerModes = useTimerModes();
   const [config, setConfig] = useState<Config | null>(null);
   const [flintDir, setFlintDir] = useState<string>("");
@@ -31,11 +34,11 @@ function AppShell() {
   const [trayToast, setTrayToast] = useState<string | null>(null);
 
   // Refs that mirror ticking/mutable values, so the global keyboard handler
-  // can read the latest values without re-registering every time `state`
+  // can read the latest values without re-registering every time `meta`
   // changes. Without this the keydown effect re-registers on every
-  // `session:tick` (B-H1).
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  // lifecycle event (B-H1).
+  const metaRef = useRef(meta);
+  metaRef.current = meta;
   const selectedModeRef = useRef(selectedMode);
   selectedModeRef.current = selectedMode;
   const stagedTagsRef = useRef(stagedTags);
@@ -97,10 +100,10 @@ function AppShell() {
 
   // If an active session exists (e.g. after recovery), stop showing the hint
   useEffect(() => {
-    if (state && state.status !== "idle") {
+    if (meta && meta.status !== "idle") {
       setHintDismissed(true);
     }
-  }, [state?.status]);
+  }, [meta?.status]);
 
   // Tray-originated events: first-close toast, quick-start from menu
   useEffect(() => {
@@ -183,7 +186,7 @@ function AppShell() {
 
   const onTagConfirm = useCallback(async (tags: string[]) => {
     setTagInputOpen(false);
-    const current = stateRef.current;
+    const current = metaRef.current;
     if (current && current.status !== "idle") {
       try {
         await invoke("set_tags", { tags });
@@ -230,13 +233,13 @@ function AppShell() {
     }, 400);
   }, []);
 
-  // Global keyboard handler. Reads the ticking `state` via stateRef so the
+  // Global keyboard handler. Reads the latest `meta` via metaRef so the
   // effect only re-registers when view/stopConfirmOpen/tagInputOpen change
   // (B-H1). startSession/confirmStop/closeSessionDetail are stable callbacks
   // so including them in deps is free.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const currentState = stateRef.current;
+      const currentMeta = metaRef.current;
       const mod = e.metaKey || e.ctrlKey;
       const target = e.target as HTMLElement | null;
       const inInput =
@@ -279,7 +282,7 @@ function AppShell() {
           return;
         }
         if (!e.shiftKey && k.length === 1 && k >= "1" && k <= "9") {
-          if (currentState?.status === "idle" && view === "timer") {
+          if (currentMeta?.status === "idle" && view === "timer") {
             const index = Number(k) - 1;
             const modes = timerModesRef.current;
             if (index < modes.length) {
@@ -311,7 +314,7 @@ function AppShell() {
           closeSessionDetail();
           return;
         }
-        if (currentState && currentState.status !== "idle") {
+        if (currentMeta && currentMeta.status !== "idle") {
           setStopConfirmOpen(true);
           return;
         }
@@ -327,7 +330,7 @@ function AppShell() {
           confirmStop();
           return;
         }
-        if (currentState && currentState.status !== "idle") {
+        if (currentMeta && currentMeta.status !== "idle") {
           invoke("mark_question").catch((err) =>
             console.error("mark_question failed", err),
           );
@@ -344,14 +347,14 @@ function AppShell() {
         )
           return;
         e.preventDefault();
-        if (!currentState) return;
-        if (currentState.status === "idle") {
+        if (!currentMeta) return;
+        if (currentMeta.status === "idle") {
           startSession();
-        } else if (currentState.status === "running") {
+        } else if (currentMeta.status === "running") {
           invoke("pause_session").catch((err) =>
             console.error("pause_session failed", err),
           );
-        } else if (currentState.status === "paused") {
+        } else if (currentMeta.status === "paused") {
           invoke("resume_session").catch((err) =>
             console.error("resume_session failed", err),
           );
@@ -399,8 +402,7 @@ function AppShell() {
                 onToggleSidebar={() => setSidebarVisible((v) => !v)}
               />
               <TimerDisplay
-                state={state}
-                intervalRemaining={intervalRemaining}
+                meta={meta}
                 config={config}
                 selectedMode={selectedMode}
                 stagedTags={stagedTags}
@@ -411,7 +413,7 @@ function AppShell() {
                 onTagCancel={() => setTagInputOpen(false)}
               />
             </div>
-            <StatusBar state={state} selectedMode={selectedMode} />
+            <StatusBar meta={meta} selectedMode={selectedMode} />
           </div>
         )}
         {view === "settings" && config && (

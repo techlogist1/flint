@@ -5,7 +5,7 @@ export type PluginEventCallback = (payload: unknown) => void | Promise<void>;
 
 export interface PluginHostHandles {
   subscribe: (pluginId: string, event: string, cb: PluginEventCallback) => void;
-  renderSlot: (pluginId: string, slot: string, html: string) => void;
+  renderSlot: (pluginId: string, slot: string, text: string) => void;
   showNotification: (
     pluginId: string,
     message: string,
@@ -15,6 +15,13 @@ export interface PluginHostHandles {
 
 export interface FlintPluginAPI {
   on(event: string, callback: PluginEventCallback): void;
+  /**
+   * Broadcast a topic from a sandboxed plugin to host React components.
+   * Routed through `window.CustomEvent("flint:plugin:${topic}")` from the
+   * host (plugin-api.ts), so the plugin itself never touches `window` —
+   * which is shadowed inside the sandbox (S-C1).
+   */
+  emit(topic: string, payload?: unknown): void;
   getTimerState(): Promise<TimerStateView>;
   nextInterval(): Promise<void>;
   stopSession(): Promise<void>;
@@ -28,7 +35,11 @@ export interface FlintPluginAPI {
   getCurrentSession(): Promise<TimerStateView | null>;
   getConfig(): Promise<Record<string, unknown>>;
   setConfig(key: string, value: unknown): Promise<void>;
-  renderSlot(slot: string, html: string): void;
+  /**
+   * Render plain text into a UI slot. The value is treated as text content
+   * and React-escaped — never injected as HTML (S-C2).
+   */
+  renderSlot(slot: string, text: string): void;
   showNotification(
     message: string,
     options?: { duration?: number },
@@ -47,6 +58,14 @@ export function createPluginAPI(
   return {
     on(event, cb) {
       host.subscribe(pluginId, event, cb);
+    },
+    emit(topic, payload) {
+      // Dispatched from host context — `window` is the real window here,
+      // not the sandbox's `undefined` shadow. Listeners on the React side
+      // subscribe to `flint:plugin:${topic}`.
+      window.dispatchEvent(
+        new CustomEvent(`flint:plugin:${topic}`, { detail: payload }),
+      );
     },
     async getTimerState() {
       return invoke<TimerStateView>("get_timer_state");
@@ -97,8 +116,8 @@ export function createPluginAPI(
     async setConfig(key, value) {
       await invoke("set_plugin_config", { pluginId, key, value });
     },
-    renderSlot(slot, html) {
-      host.renderSlot(pluginId, slot, html);
+    renderSlot(slot, text) {
+      host.renderSlot(pluginId, slot, text);
     },
     showNotification(message, options) {
       host.showNotification(pluginId, message, options);

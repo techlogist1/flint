@@ -69,9 +69,10 @@ fn tick_once(app: &AppHandle) {
     }
 
     if state.elapsed_sec % 10 == 0 {
-        if let Err(e) = storage::write_recovery(&state) {
-            eprintln!("[flint] recovery write failed: {}", e);
-        }
+        // P-C1: snapshot under the lock (cheap clone) and ship to the
+        // background writer so the actual disk I/O happens off the engine
+        // mutex and off the tick thread.
+        app.state::<storage::RecoveryWriter>().send_state(&state);
     }
 
     drop(state);
@@ -251,12 +252,15 @@ pub fn run() {
     let overlay_always_visible = cfg.overlay.always_visible;
     let overlay_enabled = cfg.overlay.enabled;
 
+    let recovery_writer = storage::spawn_recovery_writer();
+
     tauri::Builder::default()
         .manage(EngineState(Mutex::new(initial_state)))
         .manage(ConfigState(Mutex::new(cfg)))
         .manage(PluginRegistry(Mutex::new(loaded_plugins)))
         .manage(cache_state)
         .manage(AppStateStore(Mutex::new(app_state)))
+        .manage(recovery_writer)
         .setup(move |app| {
             if let Err(e) = tray::setup(app.handle()) {
                 eprintln!("[flint] tray setup failed: {}", e);

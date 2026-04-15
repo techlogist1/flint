@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { usePlugins } from "./plugin-host";
 import type { ConfigSchemaField, PluginDescriptor } from "../lib/plugins";
@@ -177,6 +177,46 @@ function SchemaField({
   pending: boolean;
   onChange: (v: unknown) => void;
 }) {
+  // P-H3: number input commits via a 500ms idle debounce instead of every
+  // keystroke. The local draft drives the displayed value while typing; when
+  // the debounce fires, save runs, the parent's value updates, and the
+  // useEffect clears the draft so we fall back to the persisted value.
+  const [numberDraft, setNumberDraft] = useState<number | null>(null);
+  const numberSaveTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (numberSaveTimerRef.current != null) {
+        window.clearTimeout(numberSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Sync the draft from the parent only while the user is idle. If a save
+    // is sitting in the 500ms window, leave the draft alone — otherwise an
+    // earlier save resolving would clobber whatever the user just typed.
+    if (numberSaveTimerRef.current == null) {
+      setNumberDraft(null);
+    }
+  }, [value]);
+
+  const queueNumberSave = useCallback(
+    (raw: number) => {
+      setNumberDraft(raw);
+      if (numberSaveTimerRef.current != null) {
+        window.clearTimeout(numberSaveTimerRef.current);
+      }
+      numberSaveTimerRef.current = window.setTimeout(() => {
+        numberSaveTimerRef.current = null;
+        onChange(raw);
+      }, 500);
+    },
+    [onChange],
+  );
+
+  const numberDisplay = numberDraft ?? Number(value ?? 0);
+
   return (
     <div className="grid grid-cols-[200px_1fr] items-center gap-4">
       <label
@@ -193,11 +233,11 @@ function SchemaField({
             data-flint-input="true"
             min={field.min}
             max={field.max}
-            value={Number(value ?? 0)}
+            value={numberDisplay}
             onChange={(e) => {
               const raw = Number(e.target.value);
               if (Number.isNaN(raw)) return;
-              onChange(raw);
+              queueNumberSave(raw);
             }}
             className="w-24 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-xs text-[var(--text-primary)] outline-none transition-colors duration-150 ease-out focus:border-[var(--accent)]"
           />

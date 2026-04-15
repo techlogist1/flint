@@ -34,12 +34,15 @@ export function SessionLog({ activeSessionId, onOpenSession }: SessionLogProps) 
   }, [load]);
 
   useEffect(() => {
+    // S-C1: built-in plugins emit refresh hints via `flint.emit`, which
+    // dispatches a CustomEvent on the host window with the `flint:plugin:`
+    // prefix. The plugin sandbox can't reach `window` directly.
     const handler = () => {
       load();
     };
-    window.addEventListener("flint:session-log:refresh", handler);
+    window.addEventListener("flint:plugin:sessions:refresh", handler);
     return () => {
-      window.removeEventListener("flint:session-log:refresh", handler);
+      window.removeEventListener("flint:plugin:sessions:refresh", handler);
     };
   }, [load]);
 

@@ -58,9 +58,13 @@ export function StatsDashboard() {
   }, [load]);
 
   useEffect(() => {
+    // S-C1: built-in plugins emit refresh hints via `flint.emit`, which
+    // dispatches a CustomEvent on the host window with the `flint:plugin:`
+    // prefix. The plugin sandbox can't reach `window` directly.
     const handler = () => load();
-    window.addEventListener("flint:stats:refresh", handler);
-    return () => window.removeEventListener("flint:stats:refresh", handler);
+    window.addEventListener("flint:plugin:stats:refresh", handler);
+    return () =>
+      window.removeEventListener("flint:plugin:stats:refresh", handler);
   }, [load]);
 
   return (

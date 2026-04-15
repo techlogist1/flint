@@ -2,8 +2,8 @@ use crate::commands::ConfigState;
 use crate::config;
 use crate::storage;
 use tauri::{
-    AppHandle, LogicalPosition, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 pub const OVERLAY_LABEL: &str = "overlay";
@@ -36,7 +36,7 @@ pub fn build_overlay(app: &AppHandle) -> Result<WebviewWindow, String> {
     .min_inner_size(WINDOW_W, WINDOW_H)
     .max_inner_size(WINDOW_W, WINDOW_H)
     .decorations(false)
-    .transparent(false)
+    .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
@@ -85,6 +85,13 @@ pub fn close_overlay_if_open(app: &AppHandle) {
     }
 }
 
+/// P-H4: tell the overlay webview whether its window is currently visible
+/// so it can suspend its `session:tick` subscription when hidden. The JS
+/// side listens for `overlay:visibility` and gates `useTickState(visible)`.
+fn emit_visibility(app: &AppHandle, visible: bool) {
+    let _ = app.emit_to(OVERLAY_LABEL, "overlay:visibility", visible);
+}
+
 #[tauri::command]
 pub fn overlay_show(app: AppHandle) -> Result<(), String> {
     let window = match app.get_webview_window(OVERLAY_LABEL) {
@@ -93,6 +100,7 @@ pub fn overlay_show(app: AppHandle) -> Result<(), String> {
     };
     window.show().map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
+    emit_visibility(&app, true);
     Ok(())
 }
 
@@ -100,6 +108,7 @@ pub fn overlay_show(app: AppHandle) -> Result<(), String> {
 pub fn overlay_hide(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
+        emit_visibility(&app, false);
     }
     Ok(())
 }
@@ -113,10 +122,12 @@ pub fn overlay_toggle(app: AppHandle) -> Result<bool, String> {
     let visible = window.is_visible().unwrap_or(false);
     if visible {
         window.hide().map_err(|e| e.to_string())?;
+        emit_visibility(&app, false);
         Ok(false)
     } else {
         window.show().map_err(|e| e.to_string())?;
         window.set_always_on_top(true).map_err(|e| e.to_string())?;
+        emit_visibility(&app, true);
         Ok(true)
     }
 }

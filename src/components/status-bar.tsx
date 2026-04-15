@@ -1,20 +1,21 @@
-import type { Mode, TimerStateView } from "../lib/types";
+import type { Mode } from "../lib/types";
 import { fallbackModeLabel } from "../lib/types";
 import { formatTime } from "../lib/format";
+import { useTickState, type MetaState } from "../hooks/use-timer";
 import { usePlugins, useTimerModes } from "./plugin-host";
 
 interface StatusBarProps {
-  state: TimerStateView | null;
+  meta: MetaState | null;
   selectedMode: Mode;
 }
 
-export function StatusBar({ state, selectedMode }: StatusBarProps) {
+export function StatusBar({ meta, selectedMode }: StatusBarProps) {
   const timerModes = useTimerModes();
   const { slots } = usePlugins();
   const pluginEntries = slots["status-bar"] ?? [];
 
-  if (!state) return null;
-  const mode = state.status === "idle" ? selectedMode : state.mode;
+  if (!meta) return null;
+  const mode = meta.status === "idle" ? selectedMode : meta.mode;
   const label =
     timerModes.find((m) => m.id === mode)?.label ?? fallbackModeLabel(mode);
 
@@ -23,31 +24,40 @@ export function StatusBar({ state, selectedMode }: StatusBarProps) {
       <div className="flex items-center gap-3">
         <span className="uppercase tracking-wider">{label}</span>
         <span className="text-[var(--text-muted)]">·</span>
-        <span className="capitalize">{state.status}</span>
+        <span className="capitalize">{meta.status}</span>
         {pluginEntries.length > 0 && (
           <>
             <span className="text-[var(--text-muted)]">·</span>
             <div className="flex items-center gap-3">
               {pluginEntries.map((entry) => (
-                // Plugins render into the status-bar slot by pushing HTML
-                // through flint.renderSlot(). The plugin is already
-                // user-installed and its JS runs in the sandbox — rendering
-                // its HTML here is the declared contract.
+                // S-C2: text-only render — React escapes the value, so a
+                // plugin can no longer inject HTML/script into the host.
                 <span
                   key={entry.pluginId}
                   className="text-[var(--text-secondary)]"
                   title={entry.pluginId}
-                  dangerouslySetInnerHTML={{ __html: entry.html }}
-                />
+                >
+                  {entry.text}
+                </span>
               ))}
             </div>
           </>
         )}
       </div>
       <div className="flex items-center gap-4 font-mono tabular-nums">
-        <span>Q: {state.questions_done}</span>
-        <span>{formatTime(state.elapsed_sec)}</span>
+        <span>Q: {meta.questions_done}</span>
+        <ElapsedText />
       </div>
     </div>
   );
+}
+
+/**
+ * P-C2: split out the elapsed text so only this leaf re-renders on a tick.
+ * The rest of StatusBar (mode/status/questions/plugin slots) only updates
+ * on lifecycle events.
+ */
+function ElapsedText() {
+  const tick = useTickState();
+  return <span>{formatTime(tick.elapsed_sec)}</span>;
 }

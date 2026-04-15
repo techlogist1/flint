@@ -1,70 +1,124 @@
 import {
   useCallback,
   useEffect,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useTimer } from "./hooks/use-timer";
+import {
+  useMetaState,
+  useTickState,
+  refreshTimerState,
+  type MetaState,
+  type TickState,
+} from "./hooks/use-timer";
 import { formatTime } from "./lib/format";
 import { fallbackModeLabel } from "./lib/types";
 
-type ExpandedState = "collapsed" | "expanded";
+type View = "collapsed" | "expanded";
 
 // Inner-container dimensions. The Tauri window itself is fixed at WINDOW_W/H
-// in overlay.rs and never resizes — collapsed/expanded is purely a CSS
-// animation on this inner element. Native window resize on Windows was both
-// jank-prone (mid-animation reflow) and a Win32 crash vector
-// (Chrome_WidgetWin_0 unregister on rapid toggle).
+// in overlay.rs and never resizes. The inner container is ALWAYS at the
+// expanded size — collapsed/expanded morphs via clip-path so the GPU
+// composites the transition with zero layout passes (O-C2).
 const COLLAPSED_W = 208;
 const COLLAPSED_H = 36;
 const EXPANDED_W = 272;
 const EXPANDED_H = 92;
 
+// Insets to clip-path the expanded box down to the pill silhouette. Half
+// the width/height delta on each side so the pill is centered inside the
+// expanded rectangle.
+const COLLAPSED_INSET_X = (EXPANDED_W - COLLAPSED_W) / 2;
+const COLLAPSED_INSET_Y = (EXPANDED_H - COLLAPSED_H) / 2;
+const COLLAPSED_CLIP = `inset(${COLLAPSED_INSET_Y}px ${COLLAPSED_INSET_X}px round 9999px)`;
+const EXPANDED_CLIP = "inset(0px 0px round 12px)";
+
+const EXPAND_TRANSITION = "clip-path 300ms cubic-bezier(0.4, 0, 0.2, 1)";
+const COLLAPSE_TRANSITION = "clip-path 200ms ease-in";
+
 const SURFACE_BG = "#1a1a1a";
 const SURFACE_BORDER = "1px solid rgba(255, 255, 255, 0.08)";
+
 // Smallest gap between consecutive expand/collapse toggles. Without this,
 // rapid click-spamming the pill stacks overlapping CSS transitions and the
-// container visibly stutters.
+// clip-path visibly stutters.
 const TOGGLE_DEBOUNCE_MS = 100;
 
 export function OverlayApp() {
-  const { state, intervalRemaining } = useTimer();
-  const [view, setView] = useState<ExpandedState>("collapsed");
-  const isExpanded = view === "expanded";
+  const meta = useMetaState();
+  // P-H4: gate the session:tick subscription on overlay visibility so a
+  // hidden overlay does not pay React reconciliation cost for ticks it
+  // cannot display.
+  const [visible, setVisible] = useState(true);
+  const tick = useTickState(visible);
 
-  // Mirror `view` into a ref so async callbacks (focus-change, pointer-up)
-  // see the latest value without re-binding.
-  const viewRef = useRef<ExpandedState>("collapsed");
-  viewRef.current = view;
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    listen<boolean>("overlay:visibility", (evt) => {
+      const next = evt.payload === true;
+      setVisible(next);
+      if (next) {
+        // Pull a fresh snapshot — meta events fire reliably but a session
+        // boundary that crossed a hidden window can leave local state stale.
+        refreshTimerState().catch(() => {});
+      }
+    })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch((e) => console.error("listen overlay:visibility failed", e));
+    // Seed from current OS state so the first render has the right answer
+    // even if the visibility event fires before listen() resolves.
+    getCurrentWindow()
+      .isVisible()
+      .then((v) => setVisible(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
-  // Guard against the focus-loss → collapse reaction that fires when the OS
-  // starts dragging the window. Without this, grabbing an expanded overlay
-  // collapses it mid-drag and the content disappears.
+  // O-C3: ref is the single source of truth for the view state. The
+  // forceRender reducer triggers a re-render after each ref mutation; no
+  // async setState race between event handlers and the toggle debounce.
+  const viewRef = useRef<View>("collapsed");
+  const [, forceRender] = useReducer((x: number) => x + 1, 0);
+  const lastToggleRef = useRef(0);
+
+  const isExpanded = viewRef.current === "expanded";
+
+  const toggle = useCallback(() => {
+    const now = Date.now();
+    if (now - lastToggleRef.current < TOGGLE_DEBOUNCE_MS) return;
+    lastToggleRef.current = now;
+    viewRef.current =
+      viewRef.current === "collapsed" ? "expanded" : "collapsed";
+    forceRender();
+  }, []);
+
+  const collapseOnly = useCallback(() => {
+    if (viewRef.current === "collapsed") return;
+    viewRef.current = "collapsed";
+    forceRender();
+  }, []);
+
+  // Drag tracking — only flipped true while the user is actively moving
+  // the window so onFocusChanged can distinguish a drag-induced focus loss
+  // from a genuine click-elsewhere.
   const isDraggingRef = useRef(false);
   const dragClearTimerRef = useRef<number | null>(null);
-
-  // Toggle debounce timestamp.
-  const lastToggleRef = useRef<number>(0);
-
-  const expand = useCallback(() => {
-    if (viewRef.current === "expanded") return;
-    const now = Date.now();
-    if (now - lastToggleRef.current < TOGGLE_DEBOUNCE_MS) return;
-    lastToggleRef.current = now;
-    setView("expanded");
-  }, []);
-
-  const collapse = useCallback(() => {
-    if (viewRef.current === "collapsed") return;
-    const now = Date.now();
-    if (now - lastToggleRef.current < TOGGLE_DEBOUNCE_MS) return;
-    lastToggleRef.current = now;
-    setView("collapsed");
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -78,8 +132,8 @@ export function OverlayApp() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (view === "expanded") {
-          collapse();
+        if (viewRef.current === "expanded") {
+          collapseOnly();
         } else {
           invoke("overlay_hide").catch((err) =>
             console.error("overlay_hide failed", err),
@@ -89,7 +143,7 @@ export function OverlayApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view, collapse]);
+  }, [collapseOnly]);
 
   const saveTimerRef = useRef<number | null>(null);
   const queueSavePosition = useCallback(() => {
@@ -131,7 +185,10 @@ export function OverlayApp() {
     window_
       .onFocusChanged(({ payload }) => {
         if (!payload && !isDraggingRef.current) {
-          collapse();
+          // O-C3: focus loss can only collapse the overlay, never expand it.
+          // Going through `collapseOnly` keeps the state machine
+          // unidirectional from this code path.
+          collapseOnly();
         }
       })
       .then((fn) => {
@@ -178,56 +235,96 @@ export function OverlayApp() {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         if (!dragging && Date.now() - startTime < 500) {
-          if (viewRef.current === "collapsed") {
-            expand();
-          } else {
-            collapse();
-          }
+          toggle();
         }
       };
 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [expand, collapse],
+    [toggle],
   );
 
-  const dotClass =
-    state?.status === "running"
-      ? "bg-[var(--accent)]"
-      : state?.status === "paused"
-        ? "bg-[var(--warning)]"
-        : "bg-[var(--text-muted)]";
+  // O-C2: container is always at the expanded size. clip-path animates the
+  // visible region between the pill silhouette (collapsed) and the full
+  // rectangle (expanded). clip-path is GPU-composited in Chromium — zero
+  // layout passes per frame.
+  const containerStyle: CSSProperties = {
+    width: EXPANDED_W,
+    height: EXPANDED_H,
+    background: SURFACE_BG,
+    border: SURFACE_BORDER,
+    clipPath: isExpanded ? EXPANDED_CLIP : COLLAPSED_CLIP,
+    transition: isExpanded ? EXPAND_TRANSITION : COLLAPSE_TRANSITION,
+    willChange: "clip-path, opacity",
+    pointerEvents: "auto",
+  };
 
-  const modeLabel = state && state.mode ? fallbackModeLabel(state.mode) : "Flint";
-  const intervalLabel = state?.current_interval?.type
-    ? state.current_interval.type.charAt(0).toUpperCase() +
-      state.current_interval.type.slice(1)
+  return (
+    // O-C1 + O-H5: outer wrapper is transparent and pointer-events: none.
+    // Only the inner box (the visible pill/card) accepts clicks and drag.
+    <div
+      className="flex h-screen w-screen items-center justify-center"
+      style={{ background: "transparent", pointerEvents: "none" }}
+    >
+      <div
+        className="relative overflow-hidden"
+        style={containerStyle}
+        onPointerDown={onPointerDown}
+      >
+        <ExpandedLayer
+          meta={meta}
+          tick={tick}
+          isExpanded={isExpanded}
+        />
+        <CollapsedLayer
+          meta={meta}
+          tick={tick}
+          isExpanded={isExpanded}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface LayerProps {
+  meta: MetaState | null;
+  tick: TickState;
+  isExpanded: boolean;
+}
+
+/**
+ * Expanded card layer — full content with controls. Cross-fades against the
+ * collapsed pill layer via opacity. Sits at inset-0 so it fills the entire
+ * (always EXPANDED-sized) container; the parent's clip-path crops the
+ * visible region down to the pill when collapsed.
+ */
+function ExpandedLayer({ meta, tick, isExpanded }: LayerProps) {
+  const dotClass = statusDotClass(meta?.status);
+  const modeLabel = meta && meta.mode ? fallbackModeLabel(meta.mode) : "Flint";
+  const intervalLabel = meta?.current_interval?.type
+    ? meta.current_interval.type.charAt(0).toUpperCase() +
+      meta.current_interval.type.slice(1)
     : null;
 
+  const target = meta?.current_interval?.target_sec;
   const displayTime =
-    state?.current_interval?.target_sec != null && intervalRemaining != null
-      ? formatTime(intervalRemaining)
-      : formatTime(state?.elapsed_sec ?? 0);
-
-  const target = state?.current_interval?.target_sec;
-  const progressPct =
-    target != null && intervalRemaining != null
-      ? Math.max(0, Math.min(100, ((target - intervalRemaining) / target) * 100))
-      : null;
+    target != null && tick.interval_remaining != null
+      ? formatTime(tick.interval_remaining)
+      : formatTime(tick.elapsed_sec);
 
   const onTogglePlay = useCallback(async () => {
-    if (!state) return;
+    if (!meta) return;
     try {
-      if (state.status === "running") {
+      if (meta.status === "running") {
         await invoke("pause_session");
-      } else if (state.status === "paused") {
+      } else if (meta.status === "paused") {
         await invoke("resume_session");
       }
     } catch (e) {
       console.error("toggle play failed", e);
     }
-  }, [state]);
+  }, [meta]);
 
   const onStop = useCallback(async () => {
     try {
@@ -245,118 +342,127 @@ export function OverlayApp() {
     }
   }, []);
 
-  // Container size + radius are CSS-animated. Faster ease-in on collapse so
-  // the pill snaps back crisply; slower cubic-bezier on expand so the
-  // expanded content has visual room to fade in (see opacity delays below).
-  const containerTransition = isExpanded
-    ? "width 300ms cubic-bezier(0.4, 0, 0.2, 1), height 300ms cubic-bezier(0.4, 0, 0.2, 1), border-radius 300ms cubic-bezier(0.4, 0, 0.2, 1)"
-    : "width 200ms ease-in, height 200ms ease-in, border-radius 200ms ease-in";
-
-  const containerStyle: CSSProperties = {
-    background: SURFACE_BG,
-    border: SURFACE_BORDER,
-    width: isExpanded ? EXPANDED_W : COLLAPSED_W,
-    height: isExpanded ? EXPANDED_H : COLLAPSED_H,
-    borderRadius: isExpanded ? 12 : 9999,
-    transition: containerTransition,
-    willChange: "width, height, border-radius",
-  };
-
   return (
     <div
-      className="flex h-screen w-screen items-center justify-center"
-      style={{ background: SURFACE_BG }}
-      onPointerDown={onPointerDown}
+      className="absolute inset-0 flex flex-col gap-1.5 px-3 py-2"
+      style={{
+        opacity: isExpanded ? 1 : 0,
+        transition: isExpanded
+          ? "opacity 200ms ease-out 100ms"
+          : "opacity 100ms ease-out",
+        pointerEvents: isExpanded ? "auto" : "none",
+      }}
     >
-      <div className="relative overflow-hidden" style={containerStyle}>
-        {/* Expanded layer — full content with controls. */}
-        <div
-          className="absolute inset-0 flex flex-col gap-1.5 px-3 py-2"
-          style={{
-            opacity: isExpanded ? 1 : 0,
-            transition: isExpanded
-              ? "opacity 200ms ease-out 100ms"
-              : "opacity 100ms ease-out",
-            pointerEvents: isExpanded ? "auto" : "none",
-          }}
-        >
-          <div className="flex items-center gap-2.5">
-            <span
-              className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`}
+      <div className="flex items-center gap-2.5">
+        <span
+          className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`}
+        />
+        <span className="font-mono text-[18px] tabular-nums text-[var(--accent)]">
+          {displayTime}
+        </span>
+        <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
+          {modeLabel}
+          {intervalLabel ? ` · ${intervalLabel}` : ""}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
+          {target != null && tick.interval_remaining != null && (
+            // V-H3: progress bar uses transform: scaleX so the per-tick
+            // animation is GPU-composited rather than a layout reflow.
+            <div
+              className="h-full origin-left bg-[var(--accent)]"
+              style={{
+                width: "100%",
+                transform: `scaleX(${Math.max(
+                  0,
+                  Math.min(1, (target - tick.interval_remaining) / target),
+                )})`,
+                transition: "transform 200ms ease-out",
+                willChange: "transform",
+              }}
             />
-            <span className="font-mono text-[18px] tabular-nums text-[var(--accent)]">
-              {displayTime}
-            </span>
-            <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">
-              {modeLabel}
-              {intervalLabel ? ` · ${intervalLabel}` : ""}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--bg-elevated)]">
-              {progressPct != null && (
-                <div
-                  className="h-full bg-[var(--accent)] transition-[width] duration-200 ease-out"
-                  style={{ width: `${progressPct}%` }}
-                />
-              )}
-            </div>
-            {state && state.questions_done > 0 && (
-              <span className="font-mono text-[10px] text-[var(--text-secondary)]">
-                Q: {state.questions_done}
-              </span>
-            )}
-          </div>
-          <div className="mt-1 flex items-center gap-1.5" data-no-drag>
-            <OverlayButton
-              disabled={!state || state.status === "idle"}
-              onClick={onTogglePlay}
-              title={state?.status === "running" ? "Pause" : "Resume"}
-            >
-              {state?.status === "running" ? <PauseIcon /> : <PlayIcon />}
-            </OverlayButton>
-            <OverlayButton
-              disabled={!state || state.status === "idle"}
-              onClick={onStop}
-              title="Stop session"
-              variant="danger"
-            >
-              <StopIcon />
-            </OverlayButton>
-            <button
-              data-no-drag
-              onClick={onOpenMain}
-              className="ml-auto rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[10px] uppercase tracking-wider text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-            >
-              Open Flint
-            </button>
-          </div>
+          )}
         </div>
-
-        {/* Collapsed layer — pill content (status dot + time + label). */}
-        <div
-          className="absolute inset-0 flex items-center gap-2.5 px-3"
-          style={{
-            opacity: isExpanded ? 0 : 1,
-            transition: isExpanded
-              ? "opacity 80ms ease-out"
-              : "opacity 150ms ease-out 150ms",
-            pointerEvents: isExpanded ? "none" : "auto",
-          }}
+        {meta && meta.questions_done > 0 && (
+          <span className="font-mono text-[10px] text-[var(--text-secondary)]">
+            Q: {meta.questions_done}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 flex items-center gap-1.5" data-no-drag>
+        <OverlayButton
+          disabled={!meta || meta.status === "idle"}
+          onClick={onTogglePlay}
+          title={meta?.status === "running" ? "Pause" : "Resume"}
         >
-          <span
-            className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-150 ease-out ${dotClass}`}
-          />
-          <span className="font-mono text-[15px] tabular-nums text-[var(--accent)]">
-            {displayTime}
-          </span>
-          <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-            Flint
-          </span>
-        </div>
+          {meta?.status === "running" ? <PauseIcon /> : <PlayIcon />}
+        </OverlayButton>
+        <OverlayButton
+          disabled={!meta || meta.status === "idle"}
+          onClick={onStop}
+          title="Stop session"
+          variant="danger"
+        >
+          <StopIcon />
+        </OverlayButton>
+        <button
+          data-no-drag
+          onClick={onOpenMain}
+          className="ml-auto rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[10px] uppercase tracking-wider text-[var(--text-secondary)] transition-colors duration-150 ease-out hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+        >
+          Open Flint
+        </button>
       </div>
     </div>
   );
+}
+
+/**
+ * Collapsed pill layer — status dot + time + label. Positioned inside the
+ * pill silhouette so it lines up with the visible (clip-pathed) region of
+ * the parent container.
+ */
+function CollapsedLayer({ meta, tick, isExpanded }: LayerProps) {
+  const dotClass = statusDotClass(meta?.status);
+  const target = meta?.current_interval?.target_sec;
+  const displayTime =
+    target != null && tick.interval_remaining != null
+      ? formatTime(tick.interval_remaining)
+      : formatTime(tick.elapsed_sec);
+
+  return (
+    <div
+      className="absolute flex items-center gap-2.5 px-3"
+      style={{
+        left: COLLAPSED_INSET_X,
+        top: COLLAPSED_INSET_Y,
+        width: COLLAPSED_W,
+        height: COLLAPSED_H,
+        opacity: isExpanded ? 0 : 1,
+        transition: isExpanded
+          ? "opacity 80ms ease-out"
+          : "opacity 150ms ease-out 150ms",
+        pointerEvents: isExpanded ? "none" : "auto",
+      }}
+    >
+      <span
+        className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-150 ease-out ${dotClass}`}
+      />
+      <span className="font-mono text-[15px] tabular-nums text-[var(--accent)]">
+        {displayTime}
+      </span>
+      <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+        Flint
+      </span>
+    </div>
+  );
+}
+
+function statusDotClass(status: MetaState["status"] | undefined): string {
+  if (status === "running") return "bg-[var(--accent)]";
+  if (status === "paused") return "bg-[var(--warning)]";
+  return "bg-[var(--text-muted)]";
 }
 
 interface OverlayButtonProps {

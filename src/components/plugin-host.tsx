@@ -36,7 +36,9 @@ const NOTIFICATION_DEFAULT_DURATION_MS = 5_000;
 
 interface SlotEntry {
   pluginId: string;
-  html: string;
+  /** Plain text payload — rendered as React text content (not HTML) so a
+   *  plugin cannot inject script into the host webview (S-C2). */
+  text: string;
 }
 
 interface PluginContextValue {
@@ -157,11 +159,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   );
 
   const renderSlot = useCallback(
-    (pluginId: string, slot: string, html: string) => {
+    (pluginId: string, slot: string, text: string) => {
       setSlots((prev) => {
         const current = prev[slot] ?? [];
         const filtered = current.filter((s) => s.pluginId !== pluginId);
-        return { ...prev, [slot]: [...filtered, { pluginId, html }] };
+        return { ...prev, [slot]: [...filtered, { pluginId, text }] };
       });
     },
     [],
@@ -245,6 +247,10 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     }
     notifyTimersRef.current.clear();
     notifyDedupRef.current.clear();
+    // P-H2: drop any toasts still on screen so a reload (e.g. enabling/
+    // disabling a plugin mid-Pomodoro) cannot leave orphan notifications
+    // whose auto-dismiss timers were just cancelled above.
+    setNotifications([]);
   }, []);
 
   const reload = useCallback(async () => {
