@@ -40,7 +40,7 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "Strike focus.",
+    "shortDescription": "Enter the flint state.",
     "longDescription": "Open-source, local-first, keyboard-driven, plugin-extensible timer for focused work."
   }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "flint"
 version = "0.1.1"
-description = "Strike focus. An open-source timer for focused work."
+description = "Enter the flint state. An open-source timer for focused work."
 authors = ["Lokavya Singh"]
 license = "MIT"
 edition = "2021"

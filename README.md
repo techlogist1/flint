@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/flintcolorlogo.png" alt="Flint — Strike focus." width="420" />
+  <img src="docs/flintcolorlogo.png" alt="Flint — Enter the flint state." width="420" />
 </p>
 
-<p align="center"><strong>Strike focus.</strong></p>
+<p align="center"><strong>Enter the flint state.</strong></p>
 
 <p align="center">An open-source, local-first, keyboard-driven, plugin-extensible desktop timer. The Obsidian of timers.</p>
 

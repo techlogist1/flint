@@ -7,7 +7,7 @@ GitHub social preview image for `techlogist1/flint`.
 - **Dimensions:** 1280 × 640 px
 - **Background:** `#050505` (Flint's `--bg-void`)
 - **Foreground:** `flintcolorlogo.png` centered, roughly 60% width
-- **Optional tagline:** "Strike focus." in JetBrains Mono below the logo, `#16a34a` (Flint's `--accent`)
+- **Optional tagline:** "Enter the flint state." in JetBrains Mono below the logo, `#16a34a` (Flint's `--accent`)
 - **Output:** `docs/social-preview.png`
 
 ## Where it's used
