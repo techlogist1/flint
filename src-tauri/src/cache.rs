@@ -571,7 +571,7 @@ pub fn range_stats(
             session_count,
         })
         .collect();
-    tags.sort_by(|a, b| b.focus_sec.cmp(&a.focus_sec));
+    tags.sort_by_key(|t| std::cmp::Reverse(t.focus_sec));
 
     // Streaks computed against today, regardless of the range window.
     let today = Utc::now().date_naive();
