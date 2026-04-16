@@ -1,13 +1,15 @@
-[![CI](https://github.com/techlogist1/flint/actions/workflows/ci.yml/badge.svg)](https://github.com/techlogist1/flint/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+<p align="center">
+  <img src="docs/flintcolorlogo.png" alt="Flint — Strike focus." width="420" />
+</p>
 
-# Flint
+<p align="center"><strong>Strike focus.</strong></p>
 
-> Strike focus.
+<p align="center">An open-source, local-first, keyboard-driven, plugin-extensible desktop timer. The Obsidian of timers.</p>
 
-An open-source, local-first, keyboard-driven, plugin-extensible desktop timer. The Obsidian of timers.
-
-<!-- screenshot goes here -->
+<p align="center">
+  <a href="https://github.com/techlogist1/flint/actions/workflows/ci.yml"><img src="https://github.com/techlogist1/flint/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
 
 ## Why Flint
 
