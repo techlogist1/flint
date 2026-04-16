@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-ssr/
 build/
+target/
 /src-tauri/target/
 /src-tauri/gen/schemas/
 
@@ -42,8 +43,10 @@ pnpm-debug.log*
 **/*.rs.bk
 Cargo.lock.bak
 
-# Claude Code local session state
-.claude/
-
 # Graphify knowledge graph output
 graphify-out/
+
+# Claude Code local runtime state (shared .claude/commands and settings.json stay tracked)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
