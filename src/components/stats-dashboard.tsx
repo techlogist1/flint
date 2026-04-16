@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bar,
@@ -17,31 +17,10 @@ import type {
   TagShare,
   TodayStats,
 } from "../lib/types";
+import { chartColors, type ChartColors } from "../lib/chart-colors";
 import { StatsHeatmap } from "./stats-heatmap";
 
 type StatsTab = "today" | "week" | "month" | "map";
-
-function resolveChartColors() {
-  const root = document.documentElement;
-  const read = (name: string, fallback: string) =>
-    getComputedStyle(root).getPropertyValue(name).trim() || fallback;
-  return {
-    accent: read("--accent", "#16a34a"),
-    accentBright: read("--accent-bright", "#22c55e"),
-    muted: read("--text-muted", "#333333"),
-    secondary: read("--text-secondary", "#5a5a5a"),
-    border: read("--border", "#1a1a1a"),
-    borderFocus: read("--border-focus", "#2a2a2a"),
-    bgPrimary: read("--bg-primary", "#0a0a0a"),
-    bgVoid: read("--bg-void", "#050505"),
-    bgElevated: read("--bg-elevated", "#141414"),
-    textPrimary: read("--text-primary", "#b8b8b8"),
-    textBright: read("--text-bright", "#e0e0e0"),
-    textSecondary: read("--text-secondary", "#5a5a5a"),
-  };
-}
-
-type ChartColors = ReturnType<typeof resolveChartColors>;
 
 export function StatsDashboard() {
   const [tab, setTab] = useState<StatsTab>("today");
@@ -51,7 +30,7 @@ export function StatsDashboard() {
   const [heatmap, setHeatmap] = useState<HeatmapCell[] | null>(null);
   const [lifetime, setLifetime] = useState<LifetimeTotals | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const colors = useMemo(() => resolveChartColors(), []);
+  const colors = chartColors();
 
   const load = useCallback(async () => {
     try {

@@ -22,6 +22,7 @@ import {
   collectAfterHooks,
   collectBeforeHooks,
   createHookRegistry,
+  hasBeforeHooks as registryHasBeforeHooks,
   registerAfterHook,
   registerBeforeHook,
   type HookContext,
@@ -32,6 +33,7 @@ import type {
   FlintCommand,
   RegisteredCommand,
 } from "../lib/command-registry";
+import { clearPluginWarnings, type RenderSpec } from "./plugin-view-renderer";
 
 interface PluginNotification {
   id: string;
@@ -47,10 +49,13 @@ const NOTIFICATION_STACK_LIMIT = 3;
 // within this window is a no-op — prevents a misfiring plugin from flooding
 // the UI with duplicates.
 const NOTIFICATION_DEDUP_MS = 10_000;
-// FIX 4: hard auto-dismiss timeout. Non-negotiable — plugins cannot override
-// this via `options.duration`. Keeps notifications ephemeral so a buggy
-// plugin cannot flood and pin the UI.
-const NOTIFICATION_AUTO_DISMISS_MS = 4_000;
+// [H-8] Notification auto-dismiss is now configurable via options.duration,
+// clamped to [NOTIFICATION_MIN_DURATION_MS, NOTIFICATION_MAX_DURATION_MS].
+// The 3-visible cap and the dedup window are unchanged — plugins can lengthen
+// the time a single toast lives, but cannot bypass the count cap.
+const NOTIFICATION_DEFAULT_DURATION_MS = 4_000;
+const NOTIFICATION_MIN_DURATION_MS = 1_000;
+const NOTIFICATION_MAX_DURATION_MS = 15_000;
 // FIX 3: hard timeout for a single plugin event callback. If a handler
 // takes longer than this, we log an error and move on so one slow plugin
 // cannot wedge the host.
@@ -61,6 +66,22 @@ interface SlotEntry {
   /** Plain text payload — rendered as React text content (not HTML) so a
    *  plugin cannot inject script into the host webview (S-C2). */
   text: string;
+}
+
+/** [C-1] Per-plugin view renderer registered via flint.registerView(slot, fn).
+ *  The registry is a plain ref + an integer version that bumps whenever the
+ *  set of views changes — consumers (Sidebar) read the live ref and re-render
+ *  on the version bump so we don't have to keep a parallel React state. */
+type ViewRenderFn = () => RenderSpec | null;
+interface PluginViewRegistry {
+  /** key = `${pluginId}:${slot}` */
+  byKey: Map<string, ViewRenderFn>;
+  /** slot → set of plugin ids that registered a view for it */
+  bySlot: Map<string, Set<string>>;
+}
+
+function createViewRegistry(): PluginViewRegistry {
+  return { byKey: new Map(), bySlot: new Map() };
 }
 
 interface PluginContextValue {
@@ -86,12 +107,23 @@ interface PluginContextValue {
   /** Run the before-hook pipeline synchronously. Returns `true` if any
    *  handler cancelled. Core code calls this before dispatching an action. */
   runBeforeHooks: (event: string, context: HookContext) => Promise<boolean>;
+  /** Cheap probe: does anyone have a before-hook for this event? Lets the
+   *  C-3 wrappers skip the await on cold paths so Space pause stays as
+   *  instant as before unless a plugin has actually subscribed. */
+  hasBeforeHooks: (event: string) => boolean;
   /** Fire after-hooks for an event. Called by the Tauri event bridge and
    *  by core code when a pure-frontend event completes. */
   dispatchAfterHooks: (event: string, payload: unknown) => void;
   /** Execute a registered command by id. Runs `before:command:execute`,
    *  the command callback, then after-hooks. Updates MRU ordering. */
   executeCommand: (id: string, source: string) => Promise<void>;
+  /** Look up a plugin's render-spec function for a slot (e.g.
+   *  `sidebar-tab`). Returns null if no view is registered. The Sidebar
+   *  uses this for community plugins; built-ins still render hardcoded
+   *  React. */
+  getViewRenderer: (pluginId: string, slot: string) => ViewRenderFn | null;
+  /** Bumped whenever the view registry changes so consumers can react. */
+  viewRegistryVersion: number;
 }
 
 const PluginContext = createContext<PluginContextValue | null>(null);
@@ -130,10 +162,20 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   const [slots, setSlots] = useState<Record<string, SlotEntry[]>>({});
   const [notifications, setNotifications] = useState<PluginNotification[]>([]);
   const [commands, setCommands] = useState<RegisteredCommand[]>([]);
+  // [C-1] View registry version — bumped whenever a plugin (de)registers a
+  // view so the Sidebar (and any other consumer) reconciles. The actual
+  // registry is a ref so we don't recreate Maps on every render.
+  const [viewRegistryVersion, setViewRegistryVersion] = useState(0);
+  const viewRegistryRef = useRef<PluginViewRegistry>(createViewRegistry());
 
   const hookRegistryRef = useRef<HookRegistry>(createHookRegistry());
   // event name → active Tauri unlisten function (or cancel-sentinel for pending)
   const unlistenersRef = useRef<Map<string, UnlistenFn>>(new Map());
+  // [H-9] Pending listen() promises kept here so tearDown can await them
+  // before clearing — otherwise a fast plugin reload can let the listen()
+  // promise resolve AFTER the cancel-sentinel is gone, orphaning the
+  // listener forever.
+  const pendingListensRef = useRef<Set<Promise<UnlistenFn>>>(new Set());
   // Last-seen timestamps keyed by `${pluginId}::${message}`. Pruned opportunistically
   // in showNotification so the map does not grow without bound.
   const notifyDedupRef = useRef<Map<string, number>>(new Map());
@@ -259,6 +301,12 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     [safeCallHook],
   );
 
+  const hasBeforeHooks = useCallback(
+    (event: string): boolean =>
+      registryHasBeforeHooks(hookRegistryRef.current, event),
+    [],
+  );
+
   const runEmitPipeline = useCallback(
     async (
       event: string,
@@ -280,15 +328,31 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         canceled = true;
       };
       unlistenersRef.current.set(event, cancel);
-      listen(event, (evt) => dispatchAfterHooks(event, evt.payload))
+      // [H-9] Track the pending listen() so tearDown can await it before
+      // clearing. The promise's then/catch handlers always remove themselves
+      // from the set after running.
+      const pending = listen(event, (evt) =>
+        dispatchAfterHooks(event, evt.payload),
+      );
+      pendingListensRef.current.add(pending);
+      pending
         .then((realUnlisten) => {
+          pendingListensRef.current.delete(pending);
           if (canceled) {
-            realUnlisten();
+            try {
+              realUnlisten();
+            } catch (err) {
+              console.error(
+                `[plugin-host] late unlisten for "${event}" failed:`,
+                err,
+              );
+            }
             return;
           }
           unlistenersRef.current.set(event, realUnlisten);
         })
         .catch((e) => {
+          pendingListensRef.current.delete(pending);
           console.error(`[plugin-host] listen("${event}") failed:`, e);
           if (unlistenersRef.current.get(event) === cancel) {
             unlistenersRef.current.delete(event);
@@ -409,6 +473,45 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  // [C-1] registerView — plugin declares a JSON render-spec function for a
+  // slot. Stored in a ref-backed registry so we do not have to thread Map
+  // identity into React state. The version counter triggers re-render in
+  // the Sidebar.
+  const registerViewForPlugin = useCallback(
+    (pluginId: string, slot: string, fn: ViewRenderFn): (() => void) => {
+      const reg = viewRegistryRef.current;
+      const key = `${pluginId}:${slot}`;
+      reg.byKey.set(key, fn);
+      let owners = reg.bySlot.get(slot);
+      if (!owners) {
+        owners = new Set();
+        reg.bySlot.set(slot, owners);
+      }
+      owners.add(pluginId);
+      setViewRegistryVersion((v) => v + 1);
+      return () => {
+        const r = viewRegistryRef.current;
+        if (r.byKey.delete(key)) {
+          const ownersInner = r.bySlot.get(slot);
+          if (ownersInner) {
+            ownersInner.delete(pluginId);
+            if (ownersInner.size === 0) r.bySlot.delete(slot);
+          }
+          setViewRegistryVersion((v) => v + 1);
+        }
+      };
+    },
+    [],
+  );
+
+  const getViewRenderer = useCallback(
+    (pluginId: string, slot: string): ViewRenderFn | null => {
+      const fn = viewRegistryRef.current.byKey.get(`${pluginId}:${slot}`);
+      return fn ?? null;
+    },
+    [],
+  );
+
   const clearNotifyTimer = useCallback((id: string) => {
     const existing = notifyTimersRef.current.get(id);
     if (existing != null) {
@@ -418,7 +521,12 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   }, []);
 
   const actuallyShowNotification = useCallback(
-    (pluginId: string, message: string, ctx: HookContext) => {
+    (
+      pluginId: string,
+      message: string,
+      ctx: HookContext,
+      durationMs: number,
+    ) => {
       if (!notificationsEnabledRef.current) return;
       const now = Date.now();
       const dedupKey = `${pluginId}::${message}`;
@@ -442,7 +550,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         notifyTimersRef.current.delete(id);
         notifyCountRef.current = Math.max(0, notifyCountRef.current - 1);
         setNotifications((prev) => prev.filter((n) => n.id !== id));
-      }, NOTIFICATION_AUTO_DISMISS_MS);
+      }, durationMs);
       notifyTimersRef.current.set(id, timerId);
 
       dispatchAfterHooks("notification:show", ctx);
@@ -451,10 +559,19 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   );
 
   const showNotification = useCallback(
-    (pluginId: string, message: string, _options?: { duration?: number }) => {
+    (pluginId: string, message: string, options?: { duration?: number }) => {
       // FIX 4: master kill-switch — if notifications are disabled during a
       // plugin reload, silently drop the call. Prevents orphan toasts.
       if (!notificationsEnabledRef.current) return;
+
+      // [H-8] Honor options.duration, clamped to a safe range. The 3-visible
+      // count cap and dedup window stay untouched — only the per-toast time
+      // becomes plugin-controllable.
+      const requested = options?.duration ?? NOTIFICATION_DEFAULT_DURATION_MS;
+      const durationMs = Math.min(
+        Math.max(requested, NOTIFICATION_MIN_DURATION_MS),
+        NOTIFICATION_MAX_DURATION_MS,
+      );
 
       // Hook pipeline: before:notification:show can cancel or mutate text.
       const ctx: HookContext = {
@@ -468,7 +585,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           typeof ctx.body === "string" ? ctx.body : message;
         const finalPluginId =
           typeof ctx.plugin_id === "string" ? ctx.plugin_id : pluginId;
-        actuallyShowNotification(finalPluginId, finalMessage, ctx);
+        actuallyShowNotification(finalPluginId, finalMessage, ctx, durationMs);
       });
     },
     [runBeforeHooks, actuallyShowNotification],
@@ -483,7 +600,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     [clearNotifyTimer],
   );
 
-  const tearDown = useCallback(() => {
+  const tearDown = useCallback(async () => {
     // FIX 4: close the gate before we start ripping state out so any
     // in-flight notify() call from a plugin we're about to unload is
     // silently dropped. reload() will flip it back on once the new
@@ -497,6 +614,17 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       }
     }
     unlistenersRef.current.clear();
+    // [H-9] Drain any in-flight listen() promises before clearing — each
+    // pending entry's then() handler removed the cancel-sentinel from
+    // unlistenersRef the moment we wrote it back, but if a promise resolves
+    // AFTER this point with the new (post-reload) sentinel still present,
+    // the late entry would orphan itself. Awaiting here forces the host to
+    // settle every late-resolving listener before reload reinitialises the
+    // plugin set. Each pending self-removes from the set in its handlers.
+    if (pendingListensRef.current.size > 0) {
+      const drain = Array.from(pendingListensRef.current);
+      await Promise.allSettled(drain);
+    }
     // Wipe every hook/command owned by a plugin, but leave core-owned
     // registrations in place — AppShell registers them once at mount and
     // does not re-register on reload.
@@ -514,6 +642,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     }
     for (const owner of pluginOwners) {
       clearPluginHooks(registry, owner);
+      clearPluginWarnings(owner);
     }
     setCommands((prev) => prev.filter((c) => c.owner === CORE_OWNER));
 
@@ -527,10 +656,17 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     // disabling a plugin mid-Pomodoro) cannot leave orphan notifications
     // whose auto-dismiss timers were just cancelled above.
     setNotifications([]);
+    // [C-1] Drop every plugin-registered view so a stale renderFn closure
+    // from the previous plugin lifecycle cannot fire after reload. Bumping
+    // the version forces a re-render in any consumer that cached a renderFn
+    // reference; the post-reload init will re-register clean callbacks.
+    viewRegistryRef.current.byKey.clear();
+    viewRegistryRef.current.bySlot.clear();
+    setViewRegistryVersion((v) => v + 1);
   }, []);
 
   const reload = useCallback(async () => {
-    tearDown();
+    await tearDown();
     setSlots({});
 
     let list: PluginDescriptor[] = [];
@@ -555,6 +691,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           showNotification,
           registerHook: registerHookForPlugin,
           registerCommand: registerPluginCommand,
+          registerView: registerViewForPlugin,
           runEmitPipeline,
         });
         runInSandbox(p.source, api);
@@ -577,6 +714,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     tearDown,
     registerHookForPlugin,
     registerPluginCommand,
+    registerViewForPlugin,
     runEmitPipeline,
     dispatchAfterHooks,
   ]);
@@ -594,7 +732,10 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     return () => {
       // Fire app:quit before cleanup so any hook can observe shutdown.
       dispatchAfterHooks("app:quit", {});
-      tearDown();
+      // tearDown is async (it awaits any in-flight Tauri listen() promises
+      // for [H-9]) but useEffect cleanup must be sync. Fire-and-forget the
+      // drain — the registry clear below is the authoritative wipe.
+      void tearDown();
       clearAllHooks(hookRegistryRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -623,8 +764,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         registerCoreCommand,
         registerCoreHook,
         runBeforeHooks,
+        hasBeforeHooks,
         dispatchAfterHooks,
         executeCommand,
+        getViewRenderer,
+        viewRegistryVersion,
       }}
     >
       {children}

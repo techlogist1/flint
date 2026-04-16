@@ -6,7 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useMetaState,
@@ -15,7 +15,7 @@ import {
   type MetaState,
   type TickState,
 } from "./hooks/use-timer";
-import { formatTime } from "./lib/format";
+import { formatTime, isBreakInterval } from "./lib/format";
 import { fallbackModeLabel, type Config } from "./lib/types";
 
 interface OverlayConfigPayload {
@@ -215,24 +215,30 @@ function Pill({
       ? Math.max(0, Math.min(1, (target - tick.interval_remaining) / target))
       : 0;
 
+  // [C-3] The overlay window does NOT host the plugin runtime — the
+  // before-hook registry lives only in the main window. Routing pause /
+  // resume / stop through `invoke()` here would bypass every plugin hook.
+  // Instead, we emit a request event; the main window listens for it and
+  // dispatches the wrappedPause/wrappedResume/wrappedStop helpers, which
+  // run the before-hook pipeline before invoking the engine command.
   const onTogglePlay = useCallback(async () => {
     if (!meta) return;
     try {
       if (meta.status === "running") {
-        await invoke("pause_session");
+        await emit("flint:overlay-action", { kind: "pause" });
       } else if (meta.status === "paused") {
-        await invoke("resume_session");
+        await emit("flint:overlay-action", { kind: "resume" });
       }
     } catch (e) {
-      console.error("toggle play failed", e);
+      console.error("overlay toggle play failed", e);
     }
   }, [meta]);
 
   const onStop = useCallback(async () => {
     try {
-      await invoke("stop_session");
+      await emit("flint:overlay-action", { kind: "stop" });
     } catch (e) {
-      console.error("stop_session failed", e);
+      console.error("overlay stop failed", e);
     }
   }, []);
 
@@ -411,7 +417,7 @@ function statusDotColor(
 ): string {
   if (status === "paused") return "var(--status-paused)";
   if (status === "running") {
-    if (intervalType === "break") return "var(--status-break)";
+    if (isBreakInterval(intervalType)) return "var(--status-break)";
     return "var(--status-running)";
   }
   return "var(--status-idle)";
@@ -425,6 +431,7 @@ function intervalLabelFor(
   if (status === "idle") return "IDLE";
   if (intervalType === "focus") return "FOCUS";
   if (intervalType === "break") return "BREAK";
+  if (intervalType === "long-break") return "LONG BREAK";
   if (intervalType) return intervalType.toUpperCase();
   if (modeLabel) return modeLabel.toUpperCase();
   return "FOCUS";

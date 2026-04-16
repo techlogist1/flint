@@ -80,7 +80,7 @@ pub fn snapshot(index: &TagIndex) -> Vec<String> {
         return Vec::new();
     };
     let mut out: Vec<String> = guard.iter().cloned().collect();
-    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.sort_by_key(|a| a.to_lowercase());
     out
 }
 

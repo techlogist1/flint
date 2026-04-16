@@ -1,6 +1,6 @@
 import type { Mode } from "../lib/types";
 import { fallbackModeLabel } from "../lib/types";
-import { formatTime } from "../lib/format";
+import { formatTime, isBreakInterval } from "../lib/format";
 import { useTickState, type MetaState } from "../hooks/use-timer";
 import { usePlugins, useTimerModes } from "./plugin-host";
 
@@ -24,7 +24,7 @@ export function StatusBar({ meta, selectedMode }: StatusBarProps) {
     meta.status === "paused"
       ? "var(--status-paused)"
       : meta.status === "running"
-        ? intervalType === "break"
+        ? isBreakInterval(intervalType)
           ? "var(--status-break)"
           : "var(--status-running)"
         : "var(--status-idle)";

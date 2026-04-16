@@ -136,9 +136,9 @@ toggle_overlay = "CommandOrControl+Shift+O"
 quick_tag = "CommandOrControl+T"    # opens tag input during session
 
 [pomodoro]
-focus_min = 25
-break_min = 5
-long_break_min = 15
+focus_duration = 25
+break_duration = 5
+long_break_duration = 15
 cycles_before_long = 4
 auto_start_breaks = true
 auto_start_focus = false
@@ -267,9 +267,9 @@ Every plugin has a `manifest.json` in its directory:
   "ui_slots": ["settings"],
   "events": ["session:start", "interval:end", "session:complete"],
   "config_schema": {
-    "focus_min": { "type": "number", "default": 25, "label": "Focus duration (min)" },
-    "break_min": { "type": "number", "default": 5, "label": "Break duration (min)" },
-    "long_break_min": { "type": "number", "default": 15, "label": "Long break (min)" },
+    "focus_duration": { "type": "number", "default": 25, "label": "Focus duration (min)" },
+    "break_duration": { "type": "number", "default": 5, "label": "Break duration (min)" },
+    "long_break_duration": { "type": "number", "default": 15, "label": "Long break (min)" },
     "cycles_before_long": { "type": "number", "default": 4, "label": "Cycles before long break" },
     "auto_start_breaks": { "type": "boolean", "default": true, "label": "Auto-start breaks" },
     "auto_start_focus": { "type": "boolean", "default": false, "label": "Auto-start focus after break" }
@@ -303,7 +303,7 @@ interface FlintPluginAPI {
   setConfig(key: string, value: any): Promise<void>;
 
   // UI
-  renderSlot(slot: string, html: string): void;
+  renderSlot(slot: string, text: string): void; // text-only, never HTML (S-C2)
   showNotification(message: string, options?: { duration?: number }): void;
 
   // Storage (plugin-local, persisted in ~/.flint/plugins/{id}/data/)

@@ -10,6 +10,7 @@ use crate::tags::{self, TagIndex};
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::Utc;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -39,6 +40,69 @@ impl SessionOverridesState {
 
     pub fn snapshot(&self) -> Option<ActiveOverride> {
         self.0.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// [C-2 / T1-A] An interval authored by a plugin via `set_first_interval` or
+/// `set_next_interval`. The Rust engine consumes (takes) it the next time it
+/// builds an interval. Slots are session-scoped: cleared on session start
+/// (any stale `first` from an aborted prior attempt) and on finalize (any
+/// unconsumed `next`). The metadata field is opaque to core — plugins put
+/// whatever they need (section name, exam id, etc.) and read it back via
+/// session events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingInterval {
+    pub interval_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_sec: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+/// Holds the two pending interval slots a plugin can set: `first` (consumed
+/// by `start_session` on its very next call) and `next` (consumed by the next
+/// `next_interval` transition). A single inner Mutex guards both slots so
+/// `clear_all` is atomic — a concurrent `set_next` cannot race in between
+/// clearing `first` and clearing `next` during `finalize_session`.
+pub struct PendingIntervalState {
+    inner: Mutex<(Option<PendingInterval>, Option<PendingInterval>)>,
+}
+
+impl PendingIntervalState {
+    pub fn new_empty() -> Self {
+        Self {
+            inner: Mutex::new((None, None)),
+        }
+    }
+
+    pub fn set_first(&self, p: PendingInterval) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.0 = Some(p);
+        }
+    }
+
+    pub fn set_next(&self, p: PendingInterval) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.1 = Some(p);
+        }
+    }
+
+    pub fn take_first(&self) -> Option<PendingInterval> {
+        self.inner.lock().ok().and_then(|mut g| g.0.take())
+    }
+
+    pub fn take_next(&self) -> Option<PendingInterval> {
+        self.inner.lock().ok().and_then(|mut g| g.1.take())
+    }
+
+    /// Clear both slots atomically. Called from `finalize_session` so a
+    /// concurrent plugin write cannot leak a pending interval into the next
+    /// session.
+    pub fn clear_all(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.0 = None;
+            g.1 = None;
+        }
     }
 }
 
@@ -81,11 +145,35 @@ fn minutes_to_sec(min: f64) -> u64 {
 }
 
 fn generate_id() -> String {
-    let n: u32 = rand::thread_rng().gen();
-    format!("{:08x}", n)
+    // [M-13]: 64-bit hex IDs. With 32-bit IDs the birthday paradox produces a
+    // collision after ~65k sessions; a power user at 200/day hits that in
+    // ~10 months. 64 bits gives ~4 billion-fold more headroom and is still a
+    // single-word format we can embed in the session filename.
+    let n: u64 = rand::thread_rng().gen();
+    format!("{:016x}", n)
 }
 
-fn build_first_interval(mode: &str, config: &Config) -> Interval {
+/// Build the first interval for a session.
+///
+/// Resolution order (priority high → low):
+/// 1. `pending` — a plugin-authored interval set via `set_first_interval`.
+///    Highest priority so a custom timer mode can fully drive its own
+///    interval logic without touching the hardcoded fallbacks below.
+/// 2. The mode-specific hardcoded math (pomodoro / countdown) using the
+///    merged config (which already incorporates any preset session overrides
+///    via `merged_config`). Pure backward-compat path so an unmodified
+///    pomodoro plugin keeps cycling correctly even when no plugin has wired
+///    the new API yet.
+///
+/// This function is a pure helper (no Tauri state) so it is unit-testable.
+fn build_first_interval(
+    mode: &str,
+    config: &Config,
+    pending: Option<PendingInterval>,
+) -> Interval {
+    if let Some(p) = pending {
+        return pending_to_interval(p, 0);
+    }
     let target = match mode {
         "pomodoro" => Some(minutes_to_sec(config.pomodoro.focus_duration)),
         "countdown" => Some(u64::from(config.core.countdown_default_min) * 60),
@@ -100,7 +188,84 @@ fn build_first_interval(mode: &str, config: &Config) -> Interval {
     }
 }
 
+fn pending_to_interval(p: PendingInterval, start_sec: u64) -> Interval {
+    Interval {
+        interval_type: p.interval_type,
+        start_sec,
+        elapsed_sec: 0,
+        target_sec: p.target_sec,
+        ended_emitted: false,
+    }
+}
+
+/// Build the next interval for an active session.
+///
+/// Resolution order (priority high → low) mirrors `build_first_interval`:
+/// 1. `pending` — a plugin-authored interval set via `set_next_interval`.
+/// 2. The mode-specific hardcoded math:
+///    - `pomodoro` → focus / break / long break cycling, using the merged
+///      config so preset overrides are honoured.
+///    - any other mode → an untimed focus interval (existing pre-T1-A
+///      behaviour, kept for backward compat).
+///
+/// Pure helper — no Tauri state — so it is unit-testable. `start_sec` of the
+/// new interval is supplied by the caller (it is the running elapsed-second
+/// at which the previous interval ended).
+fn build_next_interval(
+    mode: &str,
+    config: &Config,
+    completed_intervals: &[Interval],
+    ended_type: &str,
+    next_start_sec: u64,
+    pending: Option<PendingInterval>,
+) -> Interval {
+    if let Some(p) = pending {
+        return pending_to_interval(p, next_start_sec);
+    }
+    match mode {
+        "pomodoro" => {
+            if ended_type == "focus" {
+                let focus_count = completed_intervals
+                    .iter()
+                    .filter(|i| i.interval_type == "focus")
+                    .count() as u32;
+                let long = config.pomodoro.cycles_before_long > 0
+                    && focus_count > 0
+                    && focus_count % config.pomodoro.cycles_before_long == 0;
+                let target_min = if long {
+                    config.pomodoro.long_break_duration
+                } else {
+                    config.pomodoro.break_duration
+                };
+                Interval {
+                    interval_type: "break".into(),
+                    start_sec: next_start_sec,
+                    elapsed_sec: 0,
+                    target_sec: Some(minutes_to_sec(target_min)),
+                    ended_emitted: false,
+                }
+            } else {
+                Interval {
+                    interval_type: "focus".into(),
+                    start_sec: next_start_sec,
+                    elapsed_sec: 0,
+                    target_sec: Some(minutes_to_sec(config.pomodoro.focus_duration)),
+                    ended_emitted: false,
+                }
+            }
+        }
+        _ => Interval {
+            interval_type: "focus".into(),
+            start_sec: next_start_sec,
+            elapsed_sec: 0,
+            target_sec: None,
+            ended_emitted: false,
+        },
+    }
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri State injection — each State is a separate parameter
 pub fn start_session(
     mode: String,
     tags: Vec<String>,
@@ -109,9 +274,15 @@ pub fn start_session(
     config: State<'_, ConfigState>,
     recovery: State<'_, storage::RecoveryWriter>,
     session_overrides: State<'_, SessionOverridesState>,
+    pending_intervals: State<'_, PendingIntervalState>,
     tag_index: State<'_, TagIndex>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
+    // [T1-A] Always take the pending first-interval, even on the early-error
+    // paths below. This guarantees a stale `set_first_interval` from an
+    // aborted prior attempt does not leak into the next start.
+    let pending_first = pending_intervals.take_first();
+
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
     if state.status != TimerStatus::Idle {
         return Err("a session is already active".into());
@@ -139,7 +310,10 @@ pub fn start_session(
     let cfg = config.0.lock().map_err(|e| e.to_string())?;
     let merged = merged_config(&cfg, &mode, active_override.as_ref());
     drop(cfg);
-    let interval = build_first_interval(&mode, &merged);
+    // [T1-A] Pending takes precedence over the merged (override-aware) config,
+    // which in turn takes precedence over the base config. Order: pending >
+    // override > hardcoded.
+    let interval = build_first_interval(&mode, &merged, pending_first);
     let it_type = interval.interval_type.clone();
     let it_target = interval.target_sec;
 
@@ -251,6 +425,11 @@ pub(crate) fn finalize_session(
         *guard = None;
     }
 
+    // [T1-A] Drop any unconsumed pending intervals so a `set_next_interval`
+    // that arrived after the user pressed Stop does not bleed into whatever
+    // session starts next.
+    app.state::<PendingIntervalState>().clear_all();
+
     // Recovery deletion is funneled through the background writer so it
     // serialises with any in-flight snapshot (P-C1).
     app.state::<storage::RecoveryWriter>().delete();
@@ -344,6 +523,7 @@ pub fn next_interval(
     config: State<'_, ConfigState>,
     recovery: State<'_, storage::RecoveryWriter>,
     session_overrides: State<'_, SessionOverridesState>,
+    pending_intervals: State<'_, PendingIntervalState>,
     app: AppHandle,
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
@@ -356,7 +536,10 @@ pub fn next_interval(
     // this prevents the Pomodoro plugin from stacking rapid-fire transitions
     // if events queue up during an alt-tab or under contention. Returning
     // Ok keeps the plugin's await-chain from blowing up; the UI is
-    // unaffected because the state didn't change.
+    // unaffected because the state didn't change. NOTE: a rate-limited call
+    // intentionally does NOT consume `pending_next`, so a plugin that set a
+    // pending and then rapid-fires `next_interval` will still see the pending
+    // honoured on the next call past the cooldown.
     let now = Instant::now();
     if let Some(last) = state.last_interval_transition_at {
         if now.duration_since(last) < INTERVAL_TRANSITION_COOLDOWN {
@@ -367,6 +550,11 @@ pub fn next_interval(
             return Ok(state.clone());
         }
     }
+
+    // [T1-A] Take the pending next-interval AFTER the rate-limit check so a
+    // dropped call does not eat the pending. Pending takes precedence over
+    // override which takes precedence over hardcoded mode logic.
+    let pending_next = pending_intervals.take_next();
 
     let overrides = session_overrides.snapshot();
     let cfg = config.0.lock().map_err(|e| e.to_string())?;
@@ -386,47 +574,14 @@ pub fn next_interval(
     )
     .ok();
 
-    let next = match state.mode.as_str() {
-        "pomodoro" => {
-            if ended_type == "focus" {
-                let focus_count = state
-                    .completed_intervals
-                    .iter()
-                    .filter(|i| i.interval_type == "focus")
-                    .count() as u32;
-                let long = config.pomodoro.cycles_before_long > 0
-                    && focus_count > 0
-                    && focus_count % config.pomodoro.cycles_before_long == 0;
-                let target_min = if long {
-                    config.pomodoro.long_break_duration
-                } else {
-                    config.pomodoro.break_duration
-                };
-                Interval {
-                    interval_type: "break".into(),
-                    start_sec: next_start_sec,
-                    elapsed_sec: 0,
-                    target_sec: Some(minutes_to_sec(target_min)),
-                    ended_emitted: false,
-                }
-            } else {
-                Interval {
-                    interval_type: "focus".into(),
-                    start_sec: next_start_sec,
-                    elapsed_sec: 0,
-                    target_sec: Some(minutes_to_sec(config.pomodoro.focus_duration)),
-                    ended_emitted: false,
-                }
-            }
-        }
-        _ => Interval {
-            interval_type: "focus".into(),
-            start_sec: next_start_sec,
-            elapsed_sec: 0,
-            target_sec: None,
-            ended_emitted: false,
-        },
-    };
+    let next = build_next_interval(
+        &state.mode,
+        &config,
+        &state.completed_intervals,
+        &ended_type,
+        next_start_sec,
+        pending_next,
+    );
 
     let nt = next.interval_type.clone();
     let ntarget = next.target_sec;
@@ -442,6 +597,54 @@ pub fn next_interval(
     .ok();
 
     Ok(state.clone())
+}
+
+/// [T1-A] Author the FIRST interval of the next session. Plugins call this
+/// just before invoking `start_session` to declare what shape of interval
+/// they want — type, target seconds, and arbitrary metadata. The pending
+/// interval is consumed exactly once on the next `start_session` (taken,
+/// not cloned). If the plugin sets a pending then calls `start_session` and
+/// it errors, the pending is still cleared so a stale slot does not leak.
+///
+/// JS callers: `invoke("set_first_interval", { intervalType, targetSec, metadata })`
+/// (Tauri auto-converts camelCase ↔ snake_case at the IPC boundary).
+#[tauri::command]
+pub fn set_first_interval(
+    interval_type: String,
+    target_sec: Option<u64>,
+    metadata: Option<Value>,
+    pending_intervals: State<'_, PendingIntervalState>,
+) -> Result<(), String> {
+    pending_intervals.set_first(PendingInterval {
+        interval_type,
+        target_sec,
+        metadata,
+    });
+    Ok(())
+}
+
+/// [T1-A] Author the NEXT interval transition for an active session. Plugins
+/// call this from a `session:tick` or `interval:end` handler just before
+/// invoking `next_interval`, or pre-emptively to set the shape of the next
+/// transition. The pending is consumed exactly once on the next successful
+/// `next_interval` call (rate-limited drops do not eat the pending) and
+/// `finalize_session` clears any unconsumed pending so it cannot leak into
+/// the next session.
+///
+/// JS callers: `invoke("set_next_interval", { intervalType, targetSec, metadata })`.
+#[tauri::command]
+pub fn set_next_interval(
+    interval_type: String,
+    target_sec: Option<u64>,
+    metadata: Option<Value>,
+    pending_intervals: State<'_, PendingIntervalState>,
+) -> Result<(), String> {
+    pending_intervals.set_next(PendingInterval {
+        interval_type,
+        target_sec,
+        metadata,
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -740,7 +943,11 @@ pub fn plugin_storage_set(
     if data.len() as u64 > PLUGIN_STORAGE_MAX_BYTES {
         return Err("Storage value exceeds 5 MB limit".into());
     }
-    std::fs::write(&path, data).map_err(|e| e.to_string())
+    // [H-1]: route plugin storage writes through `storage::write_atomic` so a
+    // crash mid-write leaves either the previous file or the new file intact
+    // — never a truncated half-write. Same atomic-write policy as sessions,
+    // recovery, presets, state.json and exports.
+    storage::write_atomic(&path, data.as_bytes())
 }
 
 #[tauri::command]
@@ -1195,5 +1402,262 @@ mod tests {
         assert!(validate_session_id("foo..bar").is_err());
         assert!(validate_session_id("foo bar").is_err());
         assert!(validate_session_id("foo.json").is_err());
+    }
+
+    // [M-13] generate_id must produce 16-hex-char (64-bit) tokens — anything
+    // shorter falls back to the previous 32-bit format and re-introduces the
+    // birthday-paradox collision risk after ~65k sessions.
+    #[test]
+    fn generate_id_is_16_hex_chars() {
+        for _ in 0..10 {
+            let id = generate_id();
+            assert_eq!(id.len(), 16, "expected 16 chars, got {} ({})", id.len(), id);
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "expected hex chars only, got {}",
+                id
+            );
+        }
+    }
+
+    // [T1-A] When no plugin has set a pending first interval, an unmodified
+    // pomodoro mode must still produce a focus interval with the expected
+    // hardcoded target. Backward-compat regression guard.
+    #[test]
+    fn build_first_interval_pomodoro_fallback() {
+        let cfg = Config::default();
+        let interval = build_first_interval("pomodoro", &cfg, None);
+        assert_eq!(interval.interval_type, "focus");
+        assert_eq!(interval.start_sec, 0);
+        assert_eq!(interval.elapsed_sec, 0);
+        // Default focus_duration is 25 minutes → 1500 seconds.
+        assert_eq!(interval.target_sec, Some(1500));
+    }
+
+    // [T1-A] When no plugin has set a pending first interval, an unmodified
+    // countdown mode must still pull from `core.countdown_default_min`.
+    #[test]
+    fn build_first_interval_countdown_fallback() {
+        let cfg = Config::default();
+        let interval = build_first_interval("countdown", &cfg, None);
+        assert_eq!(interval.interval_type, "focus");
+        // Default countdown_default_min is 60 → 3600 seconds.
+        assert_eq!(interval.target_sec, Some(3600));
+    }
+
+    // [T1-A] An unmodified non-pomodoro / non-countdown mode (e.g. stopwatch
+    // or any community mode) must produce an untimed focus interval — the
+    // plugin is expected to drive its own intervals via the new API.
+    #[test]
+    fn build_first_interval_unknown_mode_is_untimed_without_pending() {
+        let cfg = Config::default();
+        let interval = build_first_interval("stopwatch", &cfg, None);
+        assert_eq!(interval.interval_type, "focus");
+        assert_eq!(interval.target_sec, None);
+    }
+
+    // [T1-A] When a pending first-interval is supplied, it MUST take
+    // precedence over the hardcoded mode logic — even for pomodoro. This is
+    // the central contract of the new plugin-driven engine.
+    #[test]
+    fn build_first_interval_pending_overrides_pomodoro() {
+        let cfg = Config::default();
+        let pending = PendingInterval {
+            interval_type: "exam-section".into(),
+            target_sec: Some(3600),
+            metadata: Some(serde_json::json!({ "section": "physics" })),
+        };
+        let interval = build_first_interval("pomodoro", &cfg, Some(pending));
+        assert_eq!(interval.interval_type, "exam-section");
+        assert_eq!(interval.target_sec, Some(3600));
+        assert_eq!(interval.start_sec, 0);
+        assert_eq!(interval.elapsed_sec, 0);
+    }
+
+    // [T1-A] When a pending first-interval is supplied for an unknown mode,
+    // it gives that mode a real target instead of the previous untimed
+    // fallback — this is what unblocks custom timer modes (Exam Mode, etc.).
+    #[test]
+    fn build_first_interval_pending_unlocks_custom_mode() {
+        let cfg = Config::default();
+        let pending = PendingInterval {
+            interval_type: "section".into(),
+            target_sec: Some(120),
+            metadata: None,
+        };
+        let interval = build_first_interval("exam-mode", &cfg, Some(pending));
+        assert_eq!(interval.interval_type, "section");
+        assert_eq!(interval.target_sec, Some(120));
+    }
+
+    // [T1-A] PendingIntervalState::take_first must consume (take, not clone)
+    // — calling it twice in a row returns Some, then None.
+    #[test]
+    fn pending_interval_state_take_first_consumes() {
+        let state = PendingIntervalState::new_empty();
+        state.set_first(PendingInterval {
+            interval_type: "focus".into(),
+            target_sec: Some(60),
+            metadata: None,
+        });
+        let first = state.take_first();
+        assert!(first.is_some());
+        assert_eq!(first.unwrap().target_sec, Some(60));
+        // Second take returns None — slot was consumed.
+        assert!(state.take_first().is_none());
+    }
+
+    // [T1-A] Same contract for take_next.
+    #[test]
+    fn pending_interval_state_take_next_consumes() {
+        let state = PendingIntervalState::new_empty();
+        state.set_next(PendingInterval {
+            interval_type: "break".into(),
+            target_sec: Some(300),
+            metadata: None,
+        });
+        let next = state.take_next();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().interval_type, "break");
+        assert!(state.take_next().is_none());
+    }
+
+    // [T1-A] clear_all must drop both slots — finalize_session relies on this
+    // to prevent stale pending intervals from leaking into the next session.
+    #[test]
+    fn pending_interval_state_clear_all_drops_both_slots() {
+        let state = PendingIntervalState::new_empty();
+        state.set_first(PendingInterval {
+            interval_type: "focus".into(),
+            target_sec: Some(60),
+            metadata: None,
+        });
+        state.set_next(PendingInterval {
+            interval_type: "break".into(),
+            target_sec: Some(300),
+            metadata: None,
+        });
+        state.clear_all();
+        assert!(state.take_first().is_none());
+        assert!(state.take_next().is_none());
+    }
+
+    // [T1-A] When no pending and no override, pomodoro `next_interval`
+    // produces a break of the configured duration following a focus.
+    #[test]
+    fn build_next_interval_pomodoro_fallback_focus_to_break() {
+        let cfg = Config::default();
+        let completed = vec![Interval {
+            interval_type: "focus".into(),
+            start_sec: 0,
+            elapsed_sec: 1500,
+            target_sec: Some(1500),
+            ended_emitted: true,
+        }];
+        let next = build_next_interval("pomodoro", &cfg, &completed, "focus", 1500, None);
+        assert_eq!(next.interval_type, "break");
+        // Default break duration is 5 minutes → 300 seconds.
+        assert_eq!(next.target_sec, Some(300));
+        assert_eq!(next.start_sec, 1500);
+    }
+
+    // [T1-A] After cycles_before_long focuses, the next break must be a long
+    // break, not a regular break. This is the existing pomodoro math —
+    // regression guard so the fallback path keeps cycling correctly.
+    #[test]
+    fn build_next_interval_pomodoro_long_break_after_cycles() {
+        let mut cfg = Config::default();
+        cfg.pomodoro.cycles_before_long = 4;
+        cfg.pomodoro.long_break_duration = 15.0;
+        let completed: Vec<Interval> = (0..4)
+            .map(|_| Interval {
+                interval_type: "focus".into(),
+                start_sec: 0,
+                elapsed_sec: 1500,
+                target_sec: Some(1500),
+                ended_emitted: true,
+            })
+            .collect();
+        let next = build_next_interval("pomodoro", &cfg, &completed, "focus", 6000, None);
+        assert_eq!(next.interval_type, "break");
+        // Long break is 15 minutes → 900 seconds.
+        assert_eq!(next.target_sec, Some(900));
+    }
+
+    // [T1-A] When a pending next-interval is supplied, it MUST take
+    // precedence over the pomodoro math — this is what lets a plugin
+    // override the cycle (e.g. an Exam Mode that goes Physics → Chemistry
+    // → Math instead of focus → break → focus).
+    #[test]
+    fn build_next_interval_pending_overrides_pomodoro() {
+        let cfg = Config::default();
+        let completed = vec![Interval {
+            interval_type: "focus".into(),
+            start_sec: 0,
+            elapsed_sec: 1500,
+            target_sec: Some(1500),
+            ended_emitted: true,
+        }];
+        let pending = PendingInterval {
+            interval_type: "chemistry".into(),
+            target_sec: Some(3600),
+            metadata: None,
+        };
+        let next = build_next_interval("pomodoro", &cfg, &completed, "focus", 1500, Some(pending));
+        // Pending wins: type is chemistry, not break.
+        assert_eq!(next.interval_type, "chemistry");
+        assert_eq!(next.target_sec, Some(3600));
+        assert_eq!(next.start_sec, 1500);
+    }
+
+    // [T1-A] Without a pending, an unknown mode falls back to an untimed
+    // focus interval (existing behaviour) — important so the existing
+    // stopwatch plugin keeps working without a Rust-side change.
+    #[test]
+    fn build_next_interval_unknown_mode_fallback_is_untimed() {
+        let cfg = Config::default();
+        let completed: Vec<Interval> = Vec::new();
+        let next = build_next_interval("stopwatch", &cfg, &completed, "focus", 0, None);
+        assert_eq!(next.interval_type, "focus");
+        assert_eq!(next.target_sec, None);
+    }
+
+    // [T1-A] With a pending, an unknown mode produces a real timed interval
+    // — this is what unblocks Plugin 2 (Exam Mode) from the audit.
+    #[test]
+    fn build_next_interval_pending_unlocks_unknown_mode() {
+        let cfg = Config::default();
+        let completed: Vec<Interval> = Vec::new();
+        let pending = PendingInterval {
+            interval_type: "section".into(),
+            target_sec: Some(1800),
+            metadata: None,
+        };
+        let next = build_next_interval("exam-mode", &cfg, &completed, "focus", 0, Some(pending));
+        assert_eq!(next.interval_type, "section");
+        assert_eq!(next.target_sec, Some(1800));
+    }
+
+    // [T1-A] End-to-end pending lifecycle: set first → simulate consumption
+    // by `start_session` (i.e. take_first) → confirm slot empties → confirm
+    // next slot is independent.
+    #[test]
+    fn pending_intervals_first_and_next_are_independent() {
+        let state = PendingIntervalState::new_empty();
+        state.set_first(PendingInterval {
+            interval_type: "intro".into(),
+            target_sec: Some(60),
+            metadata: None,
+        });
+        state.set_next(PendingInterval {
+            interval_type: "main".into(),
+            target_sec: Some(120),
+            metadata: None,
+        });
+        // Taking first does not consume next.
+        let first = state.take_first().expect("first is set");
+        assert_eq!(first.interval_type, "intro");
+        let next = state.take_next().expect("next still set after first taken");
+        assert_eq!(next.interval_type, "main");
     }
 }

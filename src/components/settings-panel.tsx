@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Config } from "../lib/types";
 import { useTimerModes } from "./plugin-host";
@@ -23,10 +23,24 @@ export function SettingsPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedPulse, setSavedPulse] = useState(false);
+  // [H-4] Track the save-pulse timeout so we can cancel it on a new save
+  // and on unmount — otherwise a quick Save → Esc within 1.2s leaves a
+  // stale setTimeout pointing at an unmounted component.
+  const savedPulseTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setDraft(initial);
   }, [initial]);
+
+  // [H-4] Clear any pending save-pulse timer when SettingsPanel unmounts.
+  useEffect(() => {
+    return () => {
+      if (savedPulseTimerRef.current != null) {
+        window.clearTimeout(savedPulseTimerRef.current);
+        savedPulseTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const save = async () => {
     setSaving(true);
@@ -37,7 +51,14 @@ export function SettingsPanel({
       });
       onSaved(updated);
       setSavedPulse(true);
-      setTimeout(() => setSavedPulse(false), 1200);
+      // [H-4] Cancel any in-flight pulse timer before starting a new one.
+      if (savedPulseTimerRef.current != null) {
+        window.clearTimeout(savedPulseTimerRef.current);
+      }
+      savedPulseTimerRef.current = window.setTimeout(() => {
+        setSavedPulse(false);
+        savedPulseTimerRef.current = null;
+      }, 1200);
     } catch (e) {
       setError(String(e));
     } finally {

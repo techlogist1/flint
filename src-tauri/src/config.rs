@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub core: Core,
@@ -145,20 +145,6 @@ impl Default for Tray {
 #[serde(default)]
 pub struct Plugins {
     pub enabled: HashMap<String, bool>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            core: Core::default(),
-            appearance: Appearance::default(),
-            overlay: Overlay::default(),
-            keybindings: Keybindings::default(),
-            pomodoro: Pomodoro::default(),
-            tray: Tray::default(),
-            plugins: Plugins::default(),
-        }
-    }
 }
 
 pub fn save(flint_dir: &Path, cfg: &Config) -> Result<(), String> {

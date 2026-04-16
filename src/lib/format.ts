@@ -1,3 +1,7 @@
+export function isBreakInterval(intervalType: string | null | undefined): boolean {
+  return intervalType === "break" || intervalType === "long-break";
+}
+
 export function formatTime(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
   const h = Math.floor(s / 3600);

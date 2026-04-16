@@ -129,6 +129,24 @@ export function collectBeforeHooks(
   return out;
 }
 
+/**
+ * Fast-path probe: is there at least one before-hook registered for this
+ * event? [C-3] uses this to skip the pipeline overhead when no plugin has
+ * subscribed — the keyboard handler can call `invoke(...)` directly with no
+ * perceptible latency in the common (no plugin) case.
+ */
+export function hasBeforeHooks(
+  registry: HookRegistry,
+  event: string,
+): boolean {
+  const byPlugin = registry.before.get(event);
+  if (!byPlugin) return false;
+  for (const handlers of byPlugin.values()) {
+    if (handlers.size > 0) return true;
+  }
+  return false;
+}
+
 export function collectAfterHooks(
   registry: HookRegistry,
   event: string,

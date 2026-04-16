@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useMetaState } from "./hooks/use-timer";
@@ -12,9 +12,16 @@ import { SessionDetailPanel } from "./components/session-detail";
 import { TrayToast } from "./components/tray-toast";
 import { CommandPalette } from "./components/command-palette";
 import { PresetForm } from "./components/preset-form";
+import { PluginPrompt } from "./components/plugin-prompt";
 import type { Config, Mode, TimerModeInfo } from "./lib/types";
 import type { Preset } from "./lib/presets";
 import type { HookContext } from "./lib/hook-registry";
+import {
+  wrappedMarkQuestion,
+  wrappedPause,
+  wrappedResume,
+  wrappedStop,
+} from "./lib/timer-actions";
 
 type View = "timer" | "settings" | "session-detail";
 
@@ -39,8 +46,19 @@ function AppShell() {
   // state internally via useTickState() in their leaf children.
   const meta = useMetaState();
   const timerModes = useTimerModes();
-  const { registerCoreCommand, runBeforeHooks, dispatchAfterHooks } =
-    usePlugins();
+  const {
+    registerCoreCommand,
+    runBeforeHooks,
+    hasBeforeHooks,
+    dispatchAfterHooks,
+  } = usePlugins();
+  // [C-3] Stable deps object passed to the wrapped* helpers in lib/timer-actions.
+  // Keeping it memoised avoids re-creating wrappers on every render; the
+  // probe + runner identities only change on plugin reload, which is fine.
+  const timerActionDeps = useMemo(
+    () => ({ runBeforeHooks, hasBeforeHooks }),
+    [runBeforeHooks, hasBeforeHooks],
+  );
   const [config, setConfig] = useState<Config | null>(null);
   const [flintDir, setFlintDir] = useState<string>("");
 
@@ -230,6 +248,41 @@ function AppShell() {
     };
   }, [config]);
 
+  // [C-3] Bridge for overlay-emitted action requests. The overlay window
+  // does not host the plugin runtime, so it cannot run the before-hook
+  // pipeline directly. Instead it emits `flint:overlay-action` and we run
+  // the wrapped helper here so plugins can veto a pause/stop initiated
+  // from the pill the same way they can from Space / Esc.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    listen<{ kind: string }>("flint:overlay-action", (evt) => {
+      const kind = evt.payload?.kind;
+      switch (kind) {
+        case "pause":
+          void wrappedPause(timerActionDeps);
+          break;
+        case "resume":
+          void wrappedResume(timerActionDeps);
+          break;
+        case "stop":
+          void wrappedStop(timerActionDeps);
+          break;
+        default:
+          console.warn("[flint] unknown overlay-action:", kind);
+      }
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch((e) => console.error("listen overlay-action failed", e));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [timerActionDeps]);
+
   // Load presets once on mount; `refreshPresets` keeps the in-memory copy
   // fresh after save/delete/load events.
   const refreshPresets = useCallback(async () => {
@@ -371,13 +424,14 @@ function AppShell() {
 
   const confirmStop = useCallback(async () => {
     setStopConfirmOpen(false);
-    try {
-      await invoke("stop_session");
-      setHintDismissed(true);
-    } catch (e) {
-      console.error("stop_session failed", e);
-    }
-  }, []);
+    // [C-3] Route through the before:session:cancel pipeline so a plugin
+    // (Exam Mode etc.) can intercept Escape-confirm. wrappedStop logs and
+    // proceeds on hook errors so a buggy plugin can never lock the user
+    // into a session.
+    const { cancelled } = await wrappedStop(timerActionDeps);
+    if (cancelled) return;
+    setHintDismissed(true);
+  }, [timerActionDeps]);
 
   // D-H4: edge-drag resize. Update config state optimistically so the
   // sidebar width takes effect immediately, then debounce the backend save.
@@ -440,9 +494,8 @@ function AppShell() {
         category: "session",
         callback: () => {
           if (metaRef.current?.status === "running") {
-            invoke("pause_session").catch((e) =>
-              console.error("pause_session failed", e),
-            );
+            // [C-3] Route through before:session:pause so plugins can veto.
+            void wrappedPause(timerActionDeps);
           }
         },
       }),
@@ -453,9 +506,7 @@ function AppShell() {
         category: "session",
         callback: () => {
           if (metaRef.current?.status === "paused") {
-            invoke("resume_session").catch((e) =>
-              console.error("resume_session failed", e),
-            );
+            void wrappedResume(timerActionDeps);
           }
         },
       }),
@@ -467,9 +518,7 @@ function AppShell() {
         hotkey: "Enter",
         callback: () => {
           if (metaRef.current?.status !== "idle") {
-            invoke("mark_question").catch((e) =>
-              console.error("mark_question failed", e),
-            );
+            void wrappedMarkQuestion(timerActionDeps);
           }
         },
       }),
@@ -623,6 +672,7 @@ function AppShell() {
     dispatchAfterHooks,
     openCreatePreset,
     deleteActiveSession,
+    timerActionDeps,
   ]);
 
   // Per-mode "switch to <plugin>" commands. Re-registered whenever the
@@ -872,9 +922,8 @@ function AppShell() {
           return;
         }
         if (currentMeta && currentMeta.status !== "idle") {
-          invoke("mark_question").catch((err) =>
-            console.error("mark_question failed", err),
-          );
+          // [C-3] Route through before:question:mark so plugins can veto.
+          void wrappedMarkQuestion(timerActionDeps);
         }
         return;
       }
@@ -892,13 +941,11 @@ function AppShell() {
         if (currentMeta.status === "idle") {
           startSession();
         } else if (currentMeta.status === "running") {
-          invoke("pause_session").catch((err) =>
-            console.error("pause_session failed", err),
-          );
+          // [C-3] Route through before:session:pause so a plugin
+          // (Exam Mode) can veto Space-pause. Cold path skips the await.
+          void wrappedPause(timerActionDeps);
         } else if (currentMeta.status === "paused") {
-          invoke("resume_session").catch((err) =>
-            console.error("resume_session failed", err),
-          );
+          void wrappedResume(timerActionDeps);
         }
       }
     };
@@ -915,6 +962,7 @@ function AppShell() {
     confirmStop,
     closeSessionDetail,
     loadPreset,
+    timerActionDeps,
   ]);
 
   const sidebarWidth = config?.appearance.sidebar_width ?? 220;
@@ -1010,6 +1058,7 @@ function AppShell() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
       />
+      <PluginPrompt />
       <PresetForm
         open={presetFormOpen}
         onClose={() => {

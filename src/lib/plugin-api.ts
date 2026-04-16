@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { TimerStateView } from "./types";
 import type { HookContext, HookHandler } from "./hook-registry";
 import type { FlintCommand } from "./command-registry";
+import type { RenderSpec } from "../components/plugin-view-renderer";
+import { promptViaQueue, type PromptOptions, type PromptResult } from "./prompt-queue";
 
 export type PluginEventCallback = (payload: unknown) => void | Promise<void>;
 
@@ -19,10 +21,33 @@ export interface PluginHostHandles {
     handler: HookHandler,
   ) => () => void;
   registerCommand: (pluginId: string, command: FlintCommand) => () => void;
+  registerView: (
+    pluginId: string,
+    slot: string,
+    renderFn: () => RenderSpec | null,
+  ) => () => void;
   runEmitPipeline: (
     event: string,
     context: HookContext,
   ) => Promise<{ cancelled: boolean }>;
+}
+
+/**
+ * Interval directive that a plugin can hand to the engine via
+ * setFirstInterval / setNextInterval. Mirrors the snake_case payload that
+ * Tauri's IPC layer expects — Tauri auto-converts camelCase JS keys to
+ * snake_case Rust args, so we use camelCase here for ergonomics.
+ */
+export interface IntervalDirective {
+  type: string;
+  target_sec?: number;
+  metadata?: unknown;
+}
+
+export interface IntervalStateView {
+  interval_type?: string;
+  interval_elapsed?: number;
+  interval_target?: number | null;
 }
 
 export interface FlintPluginAPI {
@@ -47,12 +72,42 @@ export interface FlintPluginAPI {
    * unsubscribe function; commands are auto-cleaned on plugin reload.
    */
   registerCommand(command: FlintCommand): () => void;
+  /**
+   * Register a declarative render spec for a UI slot (currently
+   * `sidebar-tab`). The host calls `renderFn` whenever the slot is
+   * visible and renders the returned spec via PluginViewRenderer — a
+   * sandboxed widget interpreter so plugins can describe charts, tables,
+   * lists, and buttons without executing arbitrary React. Returns an
+   * unsubscribe; auto-cleaned on plugin reload.
+   */
+  registerView(slot: string, renderFn: () => RenderSpec | null): () => void;
   getTimerState(): Promise<TimerStateView>;
   nextInterval(): Promise<void>;
   stopSession(): Promise<void>;
   pauseSession(): Promise<void>;
   resumeSession(): Promise<void>;
   markQuestion(): Promise<void>;
+  /**
+   * Author the FIRST interval of the upcoming session. Plugins call this
+   * inside a `before:session:start` hook to set the initial interval type
+   * and target. Without this, custom timer modes get an untimed focus
+   * interval. The Rust engine consumes the directive on the next
+   * `start_session` call.
+   */
+  setFirstInterval(opts: IntervalDirective): Promise<void>;
+  /**
+   * Push the NEXT interval the engine will create when `next_interval`
+   * fires. Plugins typically call this inside `interval:end` to author
+   * multi-section sequences (Physics → Chemistry → Math) or dynamic
+   * break durations (Flowtime).
+   */
+  setNextInterval(opts: IntervalDirective): Promise<void>;
+  /**
+   * Read the current interval slice — type, elapsed seconds, optional
+   * target. Mirrors part of the timer state but stable across mode
+   * changes. Returns an empty object when no session is active.
+   */
+  getIntervalState(): Promise<IntervalStateView>;
   getSessions(options?: {
     limit?: number;
     tags?: string[];
@@ -70,6 +125,34 @@ export interface FlintPluginAPI {
     message: string,
     options?: { duration?: number },
   ): void;
+  /**
+   * Show an interactive prompt with accept / decline buttons. Resolves to
+   * `"accepted"`, `"declined"`, or `"dismissed"` (timeout / Esc). Only one
+   * prompt is visible at a time; up to 3 may queue.
+   */
+  prompt(opts: PromptOptions): Promise<PromptResult>;
+  /**
+   * Pre-aggregated stats from the SQLite cache. Thin wrappers around the
+   * existing Rust commands so analytics plugins do not have to rebuild
+   * aggregates from raw session JSON. (See [H-7].)
+   */
+  stats: {
+    today(): Promise<unknown>;
+    range(scope: "week" | "month" | "all" | string): Promise<unknown>;
+    heatmap(days: number): Promise<unknown>;
+    lifetime(): Promise<unknown>;
+  };
+  /**
+   * Preset CRUD exposed to plugins so that "preset packs" (e.g. Exam Mode
+   * shipping JEE / NEET / SAT presets) can ship without touching the
+   * filesystem. (See [H-5].)
+   */
+  presets: {
+    list(): Promise<unknown[]>;
+    save(preset: unknown): Promise<unknown>;
+    delete(id: string): Promise<void>;
+    load(id: string): Promise<unknown>;
+  };
   storage: {
     get(key: string): Promise<unknown>;
     set(key: string, value: unknown): Promise<void>;
@@ -107,6 +190,9 @@ export function createPluginAPI(
     registerCommand(command) {
       return host.registerCommand(pluginId, command);
     },
+    registerView(slot, renderFn) {
+      return host.registerView(pluginId, slot, renderFn);
+    },
     async getTimerState() {
       return invoke<TimerStateView>("get_timer_state");
     },
@@ -124,6 +210,31 @@ export function createPluginAPI(
     },
     async markQuestion() {
       await invoke("mark_question");
+    },
+    async setFirstInterval(opts) {
+      // RUST_ENGINE adds set_first_interval(intervalType, targetSec, metadata).
+      // Tauri's IPC layer auto-converts camelCase → snake_case, so the JS
+      // names here become Rust args of the same name in snake_case.
+      await invoke("set_first_interval", {
+        intervalType: opts.type,
+        targetSec: opts.target_sec ?? null,
+        metadata: opts.metadata ?? null,
+      });
+    },
+    async setNextInterval(opts) {
+      await invoke("set_next_interval", {
+        intervalType: opts.type,
+        targetSec: opts.target_sec ?? null,
+        metadata: opts.metadata ?? null,
+      });
+    },
+    async getIntervalState() {
+      const state = await invoke<TimerStateView>("get_timer_state");
+      return {
+        interval_type: state.current_interval?.type,
+        interval_elapsed: state.current_interval?.elapsed_sec,
+        interval_target: state.current_interval?.target_sec ?? null,
+      };
     },
     async getSessions(options) {
       const all = await invoke<Array<Record<string, unknown>>>("list_sessions");
@@ -164,6 +275,37 @@ export function createPluginAPI(
     },
     showNotification(message, options) {
       host.showNotification(pluginId, message, options);
+    },
+    async prompt(opts) {
+      return promptViaQueue(opts);
+    },
+    stats: {
+      async today() {
+        return invoke("stats_today");
+      },
+      async range(scope) {
+        return invoke("stats_range", { scope });
+      },
+      async heatmap(days) {
+        return invoke("stats_heatmap", { days });
+      },
+      async lifetime() {
+        return invoke("stats_lifetime");
+      },
+    },
+    presets: {
+      async list() {
+        return invoke<unknown[]>("list_presets");
+      },
+      async save(preset) {
+        return invoke("save_preset", { preset });
+      },
+      async delete(id) {
+        await invoke("delete_preset", { id });
+      },
+      async load(id) {
+        return invoke("load_preset", { id });
+      },
     },
     storage: {
       async get(key) {

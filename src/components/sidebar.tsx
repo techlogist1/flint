@@ -3,6 +3,10 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { SessionLog } from "./session-log";
 import { StatsDashboard } from "./stats-dashboard";
 import { usePlugins } from "./plugin-host";
+import {
+  PluginViewRenderer,
+  type RenderSpec,
+} from "./plugin-view-renderer";
 
 interface SidebarTabDef {
   id: string;
@@ -32,7 +36,7 @@ export function Sidebar({
   onOpenSettings,
   onResize,
 }: SidebarProps) {
-  const { plugins } = usePlugins();
+  const { plugins, getViewRenderer, viewRegistryVersion } = usePlugins();
   const [localWidth, setLocalWidth] = useState<number | null>(null);
   const displayWidth = localWidth ?? width;
 
@@ -162,7 +166,12 @@ export function Sidebar({
         {active &&
           active.pluginId !== "session-log" &&
           active.pluginId !== "stats" && (
-            <CommunityTabPlaceholder label={active.label} />
+            <CommunityTabBody
+              pluginId={active.pluginId}
+              label={active.label}
+              getViewRenderer={getViewRenderer}
+              registryVersion={viewRegistryVersion}
+            />
           )}
         {!active && tabs.length === 0 && <DisabledHint />}
       </div>
@@ -225,6 +234,59 @@ function CommunityTabPlaceholder({ label }: { label: string }) {
   return (
     <div className="p-3 text-[11px] text-[var(--text-muted)]">
       {label.toLowerCase()} plugin has no built-in renderer.
+    </div>
+  );
+}
+
+/**
+ * [C-1] Community sidebar-tab body. If the active plugin registered a view
+ * via `flint.registerView("sidebar-tab", () => ({...}))`, call its render
+ * function (with a 5-second hard budget — we do not let a buggy plugin
+ * wedge React reconciliation) and pipe the resulting spec through
+ * PluginViewRenderer. If the call throws, returns null, or no view is
+ * registered, fall back to the legacy "no built-in renderer" placeholder.
+ *
+ * The renderFn closure is invoked on every render; the plugin can return
+ * fresh data each time. registryVersion is in the dep list so the view
+ * re-runs when a plugin reload swaps the renderer.
+ */
+function CommunityTabBody({
+  pluginId,
+  label,
+  getViewRenderer,
+  registryVersion,
+}: {
+  pluginId: string;
+  label: string;
+  getViewRenderer: (pluginId: string, slot: string) => (() => RenderSpec | null) | null;
+  registryVersion: number;
+}) {
+  const spec = useMemo<RenderSpec | null>(() => {
+    const fn = getViewRenderer(pluginId, "sidebar-tab");
+    if (!fn) return null;
+    const start = performance.now();
+    try {
+      const result = fn();
+      const elapsed = performance.now() - start;
+      if (elapsed > 200) {
+        console.warn(
+          `[plugin ${pluginId}] sidebar-tab renderer took ${elapsed.toFixed(0)}ms (blocking)`,
+        );
+      }
+      return result;
+    } catch (err) {
+      console.error(`[plugin ${pluginId}] sidebar-tab renderer threw:`, err);
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginId, registryVersion]);
+
+  if (spec == null) {
+    return <CommunityTabPlaceholder label={label} />;
+  }
+  return (
+    <div className="h-full overflow-y-auto">
+      <PluginViewRenderer spec={spec} pluginId={pluginId} />
     </div>
   );
 }

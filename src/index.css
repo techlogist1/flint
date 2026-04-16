@@ -2,6 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * [H-3] JetBrains Mono v2.304 — bundled locally so Flint stays local-first
+ * and the terminal aesthetic does not depend on a network round-trip to
+ * fonts.googleapis.com on first paint. font-display: block prevents the
+ * brief fallback flash that would otherwise re-flow the timer digits while
+ * the woff2 streams in (these are small files served from the bundle, so
+ * blocking briefly is fine and avoids visual jitter).
+ *
+ * If you replace these files, run scripts/fetch-fonts.sh to refresh from
+ * the official GitHub release: https://github.com/JetBrains/JetBrainsMono
+ */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   /* Surfaces — void of near-black, darkest → lightest */
   --bg-void: #050505;

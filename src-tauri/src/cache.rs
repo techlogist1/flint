@@ -186,7 +186,7 @@ fn parse_session_json(
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|iv| {
+                .map(|iv| {
                     let interval_type = iv
                         .get("type")
                         .and_then(|v| v.as_str())
@@ -194,11 +194,11 @@ fn parse_session_json(
                         .to_string();
                     let start_sec = iv.get("start_sec").and_then(|v| v.as_i64()).unwrap_or(0);
                     let end_sec = iv.get("end_sec").and_then(|v| v.as_i64()).unwrap_or(0);
-                    Some(IntervalView {
+                    IntervalView {
                         interval_type,
                         start_sec,
                         end_sec,
-                    })
+                    }
                 })
                 .collect::<Vec<_>>()
         })
@@ -481,11 +481,11 @@ fn compute_streaks(days_with_focus: &[NaiveDate], today: NaiveDate) -> (i64, i64
     let mut current: i64 = 0;
     let mut cursor = today;
     if !set.contains(&cursor) {
-        cursor = cursor - Duration::days(1);
+        cursor -= Duration::days(1);
     }
     while set.contains(&cursor) {
         current += 1;
-        cursor = cursor - Duration::days(1);
+        cursor -= Duration::days(1);
     }
     (current, longest)
 }
@@ -560,7 +560,7 @@ pub fn range_stats(
             focus_sec,
             session_count,
         });
-        cursor = cursor + Duration::days(1);
+        cursor += Duration::days(1);
     }
 
     let mut tags: Vec<TagShare> = tag_map
@@ -651,7 +651,7 @@ pub fn heatmap(conn: &Connection, days: i64) -> Result<Vec<HeatmapCell>, String>
             date: cursor.format("%Y-%m-%d").to_string(),
             focus_sec: by_day.get(&cursor).copied().unwrap_or(0),
         });
-        cursor = cursor + Duration::days(1);
+        cursor += Duration::days(1);
     }
     Ok(cells)
 }

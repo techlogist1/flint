@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { Mode, Config } from "../lib/types";
 import { fallbackModeLabel } from "../lib/types";
-import { formatTime, modeDescription } from "../lib/format";
+import { formatTime, isBreakInterval, modeDescription } from "../lib/format";
 import { useTickState, type MetaState } from "../hooks/use-timer";
 import { useTimerModes } from "./plugin-host";
 import { TagInput } from "./tag-input";
@@ -262,7 +262,7 @@ function StatusDot({
     status === "paused"
       ? "var(--status-paused)"
       : status === "running"
-        ? intervalType === "break"
+        ? isBreakInterval(intervalType)
           ? "var(--status-break)"
           : "var(--status-running)"
         : "var(--status-idle)";

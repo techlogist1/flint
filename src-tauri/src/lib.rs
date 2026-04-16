@@ -13,7 +13,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cache::CacheState;
-use commands::{AppStateStore, ConfigState, EngineState, PluginRegistry, SessionOverridesState};
+use commands::{
+    AppStateStore, ConfigState, EngineState, PendingIntervalState, PluginRegistry,
+    SessionOverridesState,
+};
 use tags::TagIndex;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use timer::{TimerState, TimerStatus};
@@ -151,6 +154,234 @@ fn build_initial_state() -> (TimerState, bool) {
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let flint_dir = match storage::flint_dir() {
+        Ok(p) => {
+            println!("[flint] data directory ready at {}", p.display());
+            p
+        }
+        Err(e) => {
+            eprintln!("[flint] {}", e);
+            return;
+        }
+    };
+
+    let cfg = config::load_or_create(&flint_dir);
+    let (initial_state, restored) = build_initial_state();
+    if restored {
+        println!(
+            "[flint] recovered session {:?} ({}s elapsed)",
+            initial_state.session_id, initial_state.elapsed_sec
+        );
+    }
+
+    let loaded_plugins = plugins::load_all(&flint_dir.join("plugins"));
+    println!(
+        "[flint] loaded {} plugin(s): {}",
+        loaded_plugins.len(),
+        loaded_plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let cache_state = CacheState::new();
+    match cache::initialize() {
+        Ok(conn) => {
+            if let Ok(mut guard) = cache_state.0.lock() {
+                *guard = Some(conn);
+            }
+        }
+        Err(e) => eprintln!("[flint] cache init failed: {}", e),
+    }
+
+    let app_state = storage::load_app_state();
+    let has_active_session = initial_state.status != TimerStatus::Idle;
+    let overlay_always_visible = cfg.overlay.always_visible;
+    let overlay_enabled = cfg.overlay.enabled;
+
+    let recovery_writer = storage::spawn_recovery_writer();
+
+    // [M-2]: Tag index starts empty and is populated by a background tokio
+    // task. The autocomplete tolerates an empty initial set, so the first
+    // paint is no longer blocked on a full scan of `~/.flint/sessions/`. The
+    // scan itself does no IO under the TagIndex mutex — it builds the set
+    // first and only takes the lock at the very end to install it. Updated
+    // incrementally afterwards when a session is finalised
+    // (commands::finalize_session).
+    let tag_index = TagIndex::new_empty();
+
+    tauri::Builder::default()
+        .manage(EngineState(Mutex::new(initial_state)))
+        .manage(ConfigState(Mutex::new(cfg)))
+        .manage(PluginRegistry(Mutex::new(loaded_plugins)))
+        .manage(cache_state)
+        .manage(AppStateStore(Mutex::new(app_state)))
+        .manage(recovery_writer)
+        .manage(SessionOverridesState::new_empty())
+        .manage(PendingIntervalState::new_empty())
+        .manage(tag_index)
+        .setup(move |app| {
+            if let Err(e) = tray::setup(app.handle()) {
+                eprintln!("[flint] tray setup failed: {}", e);
+            }
+
+            if overlay_enabled {
+                if let Err(e) = overlay::build_overlay(app.handle()) {
+                    eprintln!("[flint] overlay build failed: {}", e);
+                } else if has_active_session || overlay_always_visible {
+                    let _ = overlay::overlay_show(app.handle().clone());
+                }
+            }
+
+            if let Some(main) = app.get_webview_window("main") {
+                let app_handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        let cfg_state = app_handle.state::<ConfigState>();
+                        let close_to_tray = cfg_state
+                            .0
+                            .lock()
+                            .map(|c| c.tray.close_to_tray)
+                            .unwrap_or(true);
+                        if !close_to_tray {
+                            // [H-2]: finalize any running session as cancelled
+                            // before the close completes. Without this, the
+                            // recovery file lives on with a stale `last_saved_at`
+                            // and the next launch silently inflates elapsed_sec
+                            // by the wall-clock gap between close and relaunch.
+                            // `shutdown_with_finalize` also flushes the recovery
+                            // writer and tears the overlay down in the correct
+                            // Win32 ordering, so we do not need a separate
+                            // `close_overlay_if_open` call here.
+                            commands::shutdown_with_finalize(&app_handle);
+                            return;
+                        }
+                        api.prevent_close();
+
+                        let store = app_handle.state::<AppStateStore>();
+                        let toast_pending = store
+                            .0
+                            .lock()
+                            .map(|s| !s.first_close_toast_shown)
+                            .unwrap_or(false);
+
+                        if toast_pending {
+                            let _ = app_handle.emit(
+                                "tray:first-close",
+                                serde_json::json!({
+                                    "message": "Flint minimized to tray. Right-click the tray icon → Quit to exit."
+                                }),
+                            );
+                        } else if let Some(window) =
+                            app_handle.get_webview_window("main")
+                        {
+                            let _ = window.hide();
+                        }
+                    }
+                });
+            }
+
+            // [M-2]: rebuild the tag index off the main thread so a power user
+            // with thousands of session files does not pay a 1-3s startup
+            // delay before the first paint. The scan does its own filesystem
+            // walk, builds a plain HashSet, and only takes the TagIndex mutex
+            // at the end to install the result. No mutex is held across an
+            // await point (the work itself is sync inside `spawn_blocking`).
+            let scan_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let scanned = tauri::async_runtime::spawn_blocking(tags::scan_all_sessions)
+                    .await
+                    .unwrap_or_default();
+                let count = scanned.len();
+                let tag_index = scan_handle.state::<TagIndex>();
+                if let Ok(mut guard) = tag_index.0.lock() {
+                    guard.extend(scanned);
+                }
+                println!("[flint] tag index seeded with {} tags (background)", count);
+            });
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                // FIX 7: if a tick body stalls past its 1 s slot, skip the
+                // backlog instead of firing a burst of catch-up ticks. The
+                // engine is wall-clock-driven (not tick-counter-driven), so
+                // a skipped tick just means the next tick picks up where we
+                // left off — no state is lost.
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    let started = Instant::now();
+                    tick_once(&handle);
+                    let elapsed = started.elapsed();
+                    if elapsed > TICK_SLOW_WARN_THRESHOLD {
+                        eprintln!(
+                            "[flint] slow tick: body took {:?} (> {:?})",
+                            elapsed, TICK_SLOW_WARN_THRESHOLD
+                        );
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::start_session,
+            commands::pause_session,
+            commands::resume_session,
+            commands::stop_session,
+            commands::cancel_session,
+            commands::mark_question,
+            commands::get_timer_state,
+            commands::next_interval,
+            commands::set_first_interval,
+            commands::set_next_interval,
+            commands::set_tags,
+            commands::get_config,
+            commands::update_config,
+            commands::get_flint_dir,
+            commands::list_plugins,
+            commands::set_plugin_enabled,
+            commands::get_plugin_config,
+            commands::set_plugin_config,
+            commands::plugin_storage_get,
+            commands::plugin_storage_set,
+            commands::plugin_storage_delete,
+            commands::list_sessions,
+            commands::cache_list_sessions,
+            commands::cache_session_detail,
+            commands::stats_today,
+            commands::stats_range,
+            commands::stats_heatmap,
+            commands::stats_lifetime,
+            commands::rebuild_cache,
+            commands::delete_session,
+            commands::get_app_state,
+            commands::mark_first_close_shown,
+            commands::hide_main_window,
+            commands::show_main_window,
+            commands::quit_app,
+            commands::open_data_folder,
+            commands::export_all_sessions,
+            commands::list_presets,
+            commands::save_preset,
+            commands::delete_preset,
+            commands::load_preset,
+            commands::touch_preset,
+            commands::get_known_tags,
+            overlay::overlay_show,
+            overlay::overlay_hide,
+            overlay::overlay_toggle,
+            overlay::overlay_save_position,
+            overlay::overlay_move_to,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,212 +464,4 @@ mod tests {
             state.elapsed_sec
         );
     }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let flint_dir = match storage::flint_dir() {
-        Ok(p) => {
-            println!("[flint] data directory ready at {}", p.display());
-            p
-        }
-        Err(e) => {
-            eprintln!("[flint] {}", e);
-            return;
-        }
-    };
-
-    let cfg = config::load_or_create(&flint_dir);
-    let (initial_state, restored) = build_initial_state();
-    if restored {
-        println!(
-            "[flint] recovered session {:?} ({}s elapsed)",
-            initial_state.session_id, initial_state.elapsed_sec
-        );
-    }
-
-    let loaded_plugins = plugins::load_all(&flint_dir.join("plugins"));
-    println!(
-        "[flint] loaded {} plugin(s): {}",
-        loaded_plugins.len(),
-        loaded_plugins
-            .iter()
-            .map(|p| p.manifest.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    let cache_state = CacheState::new();
-    match cache::initialize() {
-        Ok(conn) => {
-            if let Ok(mut guard) = cache_state.0.lock() {
-                *guard = Some(conn);
-            }
-        }
-        Err(e) => eprintln!("[flint] cache init failed: {}", e),
-    }
-
-    let app_state = storage::load_app_state();
-    let has_active_session = initial_state.status != TimerStatus::Idle;
-    let overlay_always_visible = cfg.overlay.always_visible;
-    let overlay_enabled = cfg.overlay.enabled;
-
-    let recovery_writer = storage::spawn_recovery_writer();
-
-    // Tag index: scan all session files once at startup so the autocomplete
-    // dropdown is populated on first render. Updated incrementally when a
-    // session is finalised (commands::finalize_session).
-    let tag_index = TagIndex::new_empty();
-    {
-        let initial_tags = tags::scan_all_sessions();
-        if let Ok(mut guard) = tag_index.0.lock() {
-            *guard = initial_tags;
-        }
-    }
-    println!(
-        "[flint] tag index seeded with {} tags",
-        tag_index.0.lock().map(|g| g.len()).unwrap_or(0)
-    );
-
-    tauri::Builder::default()
-        .manage(EngineState(Mutex::new(initial_state)))
-        .manage(ConfigState(Mutex::new(cfg)))
-        .manage(PluginRegistry(Mutex::new(loaded_plugins)))
-        .manage(cache_state)
-        .manage(AppStateStore(Mutex::new(app_state)))
-        .manage(recovery_writer)
-        .manage(SessionOverridesState::new_empty())
-        .manage(tag_index)
-        .setup(move |app| {
-            if let Err(e) = tray::setup(app.handle()) {
-                eprintln!("[flint] tray setup failed: {}", e);
-            }
-
-            if overlay_enabled {
-                if let Err(e) = overlay::build_overlay(app.handle()) {
-                    eprintln!("[flint] overlay build failed: {}", e);
-                } else if has_active_session || overlay_always_visible {
-                    let _ = overlay::overlay_show(app.handle().clone());
-                }
-            }
-
-            if let Some(main) = app.get_webview_window("main") {
-                let app_handle = app.handle().clone();
-                main.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        let cfg_state = app_handle.state::<ConfigState>();
-                        let close_to_tray = cfg_state
-                            .0
-                            .lock()
-                            .map(|c| c.tray.close_to_tray)
-                            .unwrap_or(true);
-                        if !close_to_tray {
-                            // Allow the main window to close, but tear the
-                            // overlay down first so its Win32 window class
-                            // unregisters before the main window — reversing
-                            // the order intermittently crashes the app with
-                            // Chrome_WidgetWin_0 on Windows.
-                            overlay::close_overlay_if_open(&app_handle);
-                            return;
-                        }
-                        api.prevent_close();
-
-                        let store = app_handle.state::<AppStateStore>();
-                        let toast_pending = store
-                            .0
-                            .lock()
-                            .map(|s| !s.first_close_toast_shown)
-                            .unwrap_or(false);
-
-                        if toast_pending {
-                            let _ = app_handle.emit(
-                                "tray:first-close",
-                                serde_json::json!({
-                                    "message": "Flint minimized to tray. Right-click the tray icon → Quit to exit."
-                                }),
-                            );
-                        } else if let Some(window) =
-                            app_handle.get_webview_window("main")
-                        {
-                            let _ = window.hide();
-                        }
-                    }
-                });
-            }
-
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(1));
-                // FIX 7: if a tick body stalls past its 1 s slot, skip the
-                // backlog instead of firing a burst of catch-up ticks. The
-                // engine is wall-clock-driven (not tick-counter-driven), so
-                // a skipped tick just means the next tick picks up where we
-                // left off — no state is lost.
-                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    let started = Instant::now();
-                    tick_once(&handle);
-                    let elapsed = started.elapsed();
-                    if elapsed > TICK_SLOW_WARN_THRESHOLD {
-                        eprintln!(
-                            "[flint] slow tick: body took {:?} (> {:?})",
-                            elapsed, TICK_SLOW_WARN_THRESHOLD
-                        );
-                    }
-                }
-            });
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            commands::start_session,
-            commands::pause_session,
-            commands::resume_session,
-            commands::stop_session,
-            commands::cancel_session,
-            commands::mark_question,
-            commands::get_timer_state,
-            commands::next_interval,
-            commands::set_tags,
-            commands::get_config,
-            commands::update_config,
-            commands::get_flint_dir,
-            commands::list_plugins,
-            commands::set_plugin_enabled,
-            commands::get_plugin_config,
-            commands::set_plugin_config,
-            commands::plugin_storage_get,
-            commands::plugin_storage_set,
-            commands::plugin_storage_delete,
-            commands::list_sessions,
-            commands::cache_list_sessions,
-            commands::cache_session_detail,
-            commands::stats_today,
-            commands::stats_range,
-            commands::stats_heatmap,
-            commands::stats_lifetime,
-            commands::rebuild_cache,
-            commands::delete_session,
-            commands::get_app_state,
-            commands::mark_first_close_shown,
-            commands::hide_main_window,
-            commands::show_main_window,
-            commands::quit_app,
-            commands::open_data_folder,
-            commands::export_all_sessions,
-            commands::list_presets,
-            commands::save_preset,
-            commands::delete_preset,
-            commands::load_preset,
-            commands::touch_preset,
-            commands::get_known_tags,
-            overlay::overlay_show,
-            overlay::overlay_hide,
-            overlay::overlay_toggle,
-            overlay::overlay_save_position,
-            overlay::overlay_move_to,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
 }
