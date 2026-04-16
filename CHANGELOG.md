@@ -4,6 +4,10 @@ All notable changes to Flint will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-04-17 — Branding fix
+
+- Replaced placeholder Tauri icons with Flint branding across Windows (`.ico`), macOS (`.icns`), and installer assets.
+
 ## [0.1.0] — 2026-04-16 — The Real Sandbox
 
 First public release. Flint ships as a keyboard-driven, plugin-extensible desktop timer with a real primitive layer — every built-in mode is itself a plugin using the same API community authors use.
