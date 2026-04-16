@@ -8,8 +8,22 @@
 
 <p align="center">
   <a href="https://github.com/techlogist1/flint/actions/workflows/ci.yml"><img src="https://github.com/techlogist1/flint/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/techlogist1/flint/releases/latest"><img src="https://img.shields.io/github/v/release/techlogist1/flint?display_name=tag&sort=semver" alt="Latest release" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
+
+## Download
+
+Grab the latest installer from the [releases page](https://github.com/techlogist1/flint/releases/latest):
+
+| Platform | File |
+| --- | --- |
+| Windows (MSI) | [`Flint_x64_en-US.msi`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64_en-US.msi) |
+| Windows (EXE) | [`Flint_x64-setup.exe`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64-setup.exe) |
+| macOS (Apple Silicon) | [`Flint_aarch64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_aarch64.dmg) |
+| macOS (Intel) | [`Flint_x64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64.dmg) |
+
+Binaries are unsigned for v0.1 — macOS: right-click → **Open**. Windows: SmartScreen → **More info** → **Run anyway**. Linux builds and signed binaries will land in a later release.
 
 ## Why Flint
 
@@ -30,13 +44,7 @@ Flint is not a timer app — it is a timer engine. The core ships a small set of
 
 ## Quick Start
 
-Download the latest release from the [Releases page](https://github.com/techlogist1/flint/releases).
-
-- **Windows:** `.msi` installer
-- **macOS (Intel):** `.dmg` for `x86_64-apple-darwin`
-- **macOS (Apple Silicon):** `.dmg` for `aarch64-apple-darwin`
-
-First launch creates `~/.flint/`. Press `Space` to start your first session.
+Install from the [Download](#download) table above, launch Flint, and press `Space` to start your first session. The first launch creates `~/.flint/` — that folder is your data.
 
 ## Keyboard Shortcuts
 
