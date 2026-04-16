@@ -5,11 +5,12 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build ${{ matrix.platform }} (${{ matrix.target }})
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
