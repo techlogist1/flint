@@ -603,6 +603,15 @@ function AppShell() {
       }),
       registerCoreCommand({
         id: "core:create-preset",
+        name: "Create new preset",
+        icon: "✦",
+        category: "preset",
+        callback: () => {
+          openCreatePreset();
+        },
+      }),
+      registerCoreCommand({
+        id: "core:save-as-preset",
         name: "Save current config as preset",
         icon: "✦",
         category: "preset",
