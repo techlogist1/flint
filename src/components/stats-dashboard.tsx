@@ -147,7 +147,6 @@ function TodayView({ stats }: { stats: TodayStats | null }) {
         items={[
           ["FOCUS", formatHoursMinutes(stats.focus_sec)],
           ["SESSIONS", stats.session_count.toString()],
-          ["QUESTIONS", stats.questions_done.toString()],
         ]}
       />
       {stats.focus_sec === 0 && (

@@ -335,14 +335,6 @@ const SessionRow = forwardRef<HTMLButtonElement, SessionRowProps>(
           >
             {modeShort}
           </span>
-          {session.questions_done > 0 && (
-            <span
-              className="tabular-nums"
-              style={{ color: "var(--text-muted)", fontSize: 10 }}
-            >
-              q{session.questions_done}
-            </span>
-          )}
           <span
             className="ml-auto truncate text-right"
             style={{

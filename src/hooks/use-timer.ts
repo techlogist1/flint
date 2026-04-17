@@ -37,7 +37,6 @@ export interface MetaState {
   started_at: string | null;
   mode: string;
   tags: string[];
-  questions_done: number;
   current_interval: MetaInterval | null;
   completed_intervals: Interval[];
 }
@@ -50,7 +49,6 @@ const REFRESH_EVENTS = [
   "session:cancel",
   "interval:start",
   "interval:end",
-  "question:marked",
   "recovery:restored",
 ];
 
@@ -93,7 +91,6 @@ function applyState(s: TimerStateView): void {
     started_at: s.started_at,
     mode: s.mode,
     tags: s.tags,
-    questions_done: s.questions_done,
     current_interval: s.current_interval
       ? {
           type: s.current_interval.type,

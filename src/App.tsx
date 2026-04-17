@@ -17,7 +17,6 @@ import type { Config, Mode, TimerModeInfo } from "./lib/types";
 import type { Preset } from "./lib/presets";
 import type { HookContext } from "./lib/hook-registry";
 import {
-  wrappedMarkQuestion,
   wrappedPause,
   wrappedResume,
   wrappedStop,
@@ -51,6 +50,7 @@ function AppShell() {
     runBeforeHooks,
     hasBeforeHooks,
     dispatchAfterHooks,
+    runEmitPipeline,
   } = usePlugins();
   // [C-3] Stable deps object passed to the wrapped* helpers in lib/timer-actions.
   // Keeping it memoised avoids re-creating wrappers on every render; the
@@ -511,18 +511,6 @@ function AppShell() {
         },
       }),
       registerCoreCommand({
-        id: "core:mark-question",
-        name: "Mark question done",
-        icon: "●",
-        category: "session",
-        hotkey: "Enter",
-        callback: () => {
-          if (metaRef.current?.status !== "idle") {
-            void wrappedMarkQuestion(timerActionDeps);
-          }
-        },
-      }),
-      registerCoreCommand({
         id: "core:toggle-overlay",
         name: "Toggle overlay",
         icon: "▣",
@@ -931,8 +919,12 @@ function AppShell() {
           return;
         }
         if (currentMeta && currentMeta.status !== "idle") {
-          // [C-3] Route through before:question:mark so plugins can veto.
-          void wrappedMarkQuestion(timerActionDeps);
+          // Enter emits signal:mark. Core does not handle the signal — it
+          // just routes. Plugins subscribe via flint.on("signal:mark", …).
+          void runEmitPipeline("signal:mark", {
+            session_id: currentMeta.session_id,
+            source: "keyboard",
+          });
         }
         return;
       }
@@ -972,6 +964,7 @@ function AppShell() {
     closeSessionDetail,
     loadPreset,
     timerActionDeps,
+    runEmitPipeline,
   ]);
 
   const sidebarWidth = config?.appearance.sidebar_width ?? 220;

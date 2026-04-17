@@ -122,13 +122,6 @@ export function TimerDisplay({
           )}
         </div>
 
-        {/* Question count — inline, only if > 0 */}
-        {!isIdle && meta.questions_done > 0 && (
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-            Q <span className="text-[var(--text-bright)]">{meta.questions_done}</span>
-          </div>
-        )}
-
         {/* Idle layout: quick-start bar + inline tag autocomplete. When
             running, tags are read-only pills (unless Ctrl+T opened the
             legacy mid-session TagInput). */}

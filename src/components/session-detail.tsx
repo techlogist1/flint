@@ -173,7 +173,6 @@ function DetailBody({ detail }: { detail: SessionDetailType }) {
           <span>## </span>STATS
         </div>
         <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-[var(--border)] pt-2 text-[11px] tabular-nums">
-          <StatItem label="QUESTIONS" value={String(detail.questions_done)} />
           <StatItem label="FOCUS" value={formatTime(focusSec)} />
           <StatItem
             label="INTERVALS"

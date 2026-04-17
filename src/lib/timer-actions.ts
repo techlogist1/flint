@@ -19,7 +19,7 @@
  * Event names match the after-event names already shipped by Rust where
  * possible (`session:pause`, `session:resume`, `session:cancel`) and
  * introduce new before-only verbs where the action does not have a clean
- * after-event match (`question:mark`, `interval:next`).
+ * after-event match (`interval:next`).
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { HookContext } from "./hook-registry";
@@ -118,21 +118,6 @@ export async function wrappedStop(
     ctx,
     () => invoke("stop_session"),
     "stop_session",
-  );
-}
-
-export async function wrappedMarkQuestion(
-  deps: TimerActionDeps,
-  opts: BaseOpts = {},
-): Promise<{ cancelled: boolean }> {
-  // Action verb (`question:mark`) — the after-event is `question:marked`.
-  const ctx: HookContext = { ...(opts.context ?? {}) };
-  return runAction(
-    deps,
-    "question:mark",
-    ctx,
-    () => invoke("mark_question"),
-    "mark_question",
   );
 }
 

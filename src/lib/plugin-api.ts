@@ -50,6 +50,18 @@ export interface IntervalStateView {
   interval_target?: number | null;
 }
 
+/**
+ * Payload shape for `signal:*` emits. Populated by the keyboard, palette, or
+ * another plugin when a user-initiated moment happens during a running
+ * session. `source` distinguishes the origin so hook handlers can decide
+ * whether to respond (e.g. a plugin might ignore programmatic signals).
+ */
+export interface SignalContext {
+  session_id?: string;
+  elapsed_sec?: number;
+  source?: "keyboard" | "palette" | "plugin" | string;
+}
+
 export interface FlintPluginAPI {
   on(event: string, callback: PluginEventCallback): void;
   /**
@@ -86,7 +98,14 @@ export interface FlintPluginAPI {
   stopSession(): Promise<void>;
   pauseSession(): Promise<void>;
   resumeSession(): Promise<void>;
-  markQuestion(): Promise<void>;
+  /**
+   * Emit a `signal:<name>` event through the hook pipeline. Sugar over
+   * `flint.emit` with the standard `signal:*` namespace and a defaulted
+   * `source: "plugin"`. Core already routes Enter keydowns through
+   * `signal:mark`; plugins subscribe via `flint.on("signal:mark", …)` rather
+   * than binding keys directly.
+   */
+  signal(name: string, payload?: SignalContext): Promise<{ cancelled: boolean }>;
   /**
    * Author the FIRST interval of the upcoming session. Plugins call this
    * inside a `before:session:start` hook to set the initial interval type
@@ -208,8 +227,12 @@ export function createPluginAPI(
     async resumeSession() {
       await invoke("resume_session");
     },
-    async markQuestion() {
-      await invoke("mark_question");
+    async signal(name, payload) {
+      const ctx: HookContext = {
+        ...(payload ?? {}),
+        source: payload?.source ?? "plugin",
+      } as HookContext;
+      return host.runEmitPipeline(`signal:${name}`, ctx);
     },
     async setFirstInterval(opts) {
       // RUST_ENGINE adds set_first_interval(intervalType, targetSec, metadata).

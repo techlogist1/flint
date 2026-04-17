@@ -68,12 +68,6 @@ export function StatusBar({ meta, selectedMode }: StatusBarProps) {
         )}
       </div>
       <div className="flex items-center gap-4 tabular-nums">
-        <span>
-          <span className="text-[var(--text-muted)]">Q</span>{" "}
-          <span className="text-[var(--text-primary)]">
-            {meta.questions_done}
-          </span>
-        </span>
         <ElapsedText />
       </div>
     </div>

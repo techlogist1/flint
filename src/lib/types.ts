@@ -22,7 +22,6 @@ export interface TimerStateView {
   session_id: string | null;
   started_at: string | null;
   elapsed_sec: number;
-  questions_done: number;
   mode: string;
   tags: string[];
   current_interval: Interval | null;
@@ -93,7 +92,6 @@ export interface CachedSession {
   duration_sec: number;
   mode: string;
   tags: string[];
-  questions_done: number;
   completed: boolean;
 }
 
@@ -110,7 +108,6 @@ export interface SessionDetail extends CachedSession {
 export interface TodayStats {
   focus_sec: number;
   session_count: number;
-  questions_done: number;
 }
 
 export interface DailyBucket {
@@ -133,7 +130,6 @@ export interface HeatmapCell {
 export interface RangeStats {
   total_focus_sec: number;
   total_sessions: number;
-  total_questions: number;
   current_streak: number;
   longest_streak: number;
   daily: DailyBucket[];

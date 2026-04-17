@@ -114,6 +114,13 @@ interface PluginContextValue {
   /** Fire after-hooks for an event. Called by the Tauri event bridge and
    *  by core code when a pure-frontend event completes. */
   dispatchAfterHooks: (event: string, payload: unknown) => void;
+  /** Run the full before → after pipeline for a core-emitted event with no
+   *  backing Tauri command (e.g. `signal:mark`). Before-hooks can cancel;
+   *  after-hooks fire only if nobody cancelled. */
+  runEmitPipeline: (
+    event: string,
+    context: HookContext,
+  ) => Promise<{ cancelled: boolean }>;
   /** Execute a registered command by id. Runs `before:command:execute`,
    *  the command callback, then after-hooks. Updates MRU ordering. */
   executeCommand: (id: string, source: string) => Promise<void>;
@@ -766,6 +773,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         runBeforeHooks,
         hasBeforeHooks,
         dispatchAfterHooks,
+        runEmitPipeline,
         executeCommand,
         getViewRenderer,
         viewRegistryVersion,
