@@ -672,8 +672,19 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
     setViewRegistryVersion((v) => v + 1);
   }, []);
 
+  // React 18 StrictMode double-invokes mount effects in dev. The first
+  // reload() can race with the second (kicked off after cleanup fired a
+  // fire-and-forget tearDown), leading to each plugin's commands being
+  // registered twice and tripping the "last registration wins" warning.
+  // Bumping a generation counter on every reload and on unmount lets an
+  // in-flight reload detect it has been superseded and bail out before
+  // re-registering. Production builds (no StrictMode) are unaffected.
+  const reloadGenRef = useRef(0);
+
   const reload = useCallback(async () => {
+    const myGen = ++reloadGenRef.current;
     await tearDown();
+    if (myGen !== reloadGenRef.current) return;
     setSlots({});
 
     let list: PluginDescriptor[] = [];
@@ -687,9 +698,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       setLoaded(true);
       return;
     }
+    if (myGen !== reloadGenRef.current) return;
     setPlugins(list);
 
     for (const p of list) {
+      if (myGen !== reloadGenRef.current) return;
       if (!p.enabled) continue;
       try {
         const api = createPluginAPI(p.manifest.id, {
@@ -709,6 +722,7 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
         );
       }
     }
+    if (myGen !== reloadGenRef.current) return;
     // FIX 4: plugins are initialised — safe to accept notifications again.
     notificationsEnabledRef.current = true;
     setLoaded(true);
@@ -737,6 +751,9 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     reload();
     return () => {
+      // Bump the reload generation so any in-flight reload() bails out
+      // before re-registering plugin commands (StrictMode double-mount).
+      reloadGenRef.current++;
       // Fire app:quit before cleanup so any hook can observe shutdown.
       dispatchAfterHooks("app:quit", {});
       // tearDown is async (it awaits any in-flight Tauri listen() promises
