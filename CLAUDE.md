@@ -137,6 +137,8 @@ Return shapes: `stats.today → {sessions, focus_sec, questions}`, `stats.range 
 
 **`new Function` caveat.** Plugins run via `new Function("flint", source)`. A determined plugin can reach `Function` through `(function(){return Function})()` and escape shadowing. Sandbox is defense-in-depth against accidental DOM access, not malicious code — trust model is `npm install`. Future hardening: Web Worker realm.
 
+**CSP must include `'unsafe-eval'`.** The sandbox uses `new Function` to execute plugin source. In release builds Tauri loads the frontend over `tauri://localhost` and enforces the CSP declared in `src-tauri/tauri.conf.json`; removing `'unsafe-eval'` from `script-src` silently breaks every plugin's activation (`EvalError`) in the installed binary while `cargo tauri dev` still works (Vite serves over HTTP, no CSP). Long-term: move plugin execution to a Web Worker realm so this requirement can be dropped.
+
 **`safeCallPlugin` / `safeCallHook`:** every plugin-authored function runs inside a 5-second `Promise.race`; exceeded calls are abandoned and logged.
 
 **Notifications:** 1–15 s duration clamp (`clampDuration` in `plugin-host.tsx`), 3 visible cap, per-plugin `(plugin_id, body)` 10 s dedup window.
