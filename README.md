@@ -53,7 +53,7 @@ Install from the [Download](#download) table above, launch Flint, and press `Spa
 | Key | Action |
 | --- | --- |
 | `Space` | Start / pause / resume |
-| `Enter` | Mark a question (while running or paused) |
+| `Enter` | Emit `signal:mark` (during a running session; inert in core, plugins subscribe) |
 | `Escape` | Confirm stop, or close a modal |
 
 ### App shortcuts
@@ -75,7 +75,7 @@ Every shortcut is also a command in the palette. Hotkeys are fixed in v0.1.
 
 A Flint plugin is a JavaScript module plus a `manifest.json`. Plugins receive a `flint` API object and run in a sandbox with `window`, `document`, `fetch`, `localStorage`, and Tauri internals shadowed to `undefined`. From inside that sandbox a plugin can:
 
-- **Hook the session lifecycle.** Before-hooks (`flint.hook`) can veto or mutate `session:start`, `session:pause`, `session:resume`, `session:stop`, `session:cancel`, `question:mark`, `interval:next`, `preset:load`, `command:execute`, `notification:show`, `tag:add`, and `tag:remove`. After-hooks (`flint.on`) observe every event, including engine-fired `interval:start`, `interval:end`, `session:complete`, `app:ready`, and `app:quit`.
+- **Hook the session lifecycle.** Before-hooks (`flint.hook`) can veto or mutate `session:start`, `session:pause`, `session:resume`, `session:stop`, `session:cancel`, `signal:mark`, `interval:next`, `preset:load`, `command:execute`, `notification:show`, `tag:add`, and `tag:remove`. After-hooks (`flint.on`) observe every event, including engine-fired `interval:start`, `interval:end`, `session:complete`, `app:ready`, and `app:quit`.
 - **Register commands.** `flint.registerCommand({ id, name, callback })` makes any action searchable from `Ctrl+P`, with optional icon, category, and informational hotkey badge.
 - **Author intervals.** `flint.setFirstInterval` and `flint.setNextInterval` push interval directives into the Rust engine's pending slots. The Pomodoro plugin drives its own focus / break / long-break math through these APIs; community timer modes ship the same way by declaring `"timer_mode": true` in the manifest.
 - **Render UI declaratively.** `flint.registerView(slot, renderFn)` returns a JSON render spec the host interprets. Supported widgets: `container`, `text`, `stat-row`, `bar-chart`, `line-chart`, `heatmap`, `table`, `button`. Plugins describe what to render, the host renders it — no JSX, no DOM.
@@ -88,7 +88,7 @@ A Flint plugin is a JavaScript module plus a `manifest.json`. Plugins receive a 
 ### Built-in plugins
 
 - `pomodoro` — configurable focus / break / long-break cycle, drives its own intervals through `setFirstInterval` / `setNextInterval`.
-- `stopwatch` — open-ended timer with lap marking via `Enter`.
+- `stopwatch` — open-ended timer with lap marking via the `stopwatch:mark-lap` command (counts stored in plugin storage).
 - `countdown` — fixed-length countdown with configurable duration.
 - `session-log` — sidebar tab listing completed sessions with detail view and delete support.
 - `stats` — sidebar tab rendering the stats dashboard (today / range / heatmap / lifetime).

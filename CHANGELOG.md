@@ -4,6 +4,40 @@ All notable changes to Flint will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-04-17 — Sandbox Stability
+
+The last Lock-In-specific assumption is carved out of core. Question semantics no longer live in the Rust engine, the session schema, the SQLite cache, the frontend types, or the UI. What replaces them is the generic hook foundation every v0.2.0 behavior plugin will inherit.
+
+### Breaking changes
+
+- **`question:mark` → `signal:mark`.** The hook name has been renamed to a neutral signal namespace. Plugins that called `flint.hook("question:mark", …)` or `flint.on("question:mark", …)` must subscribe to `"signal:mark"` instead. The payload shape is unchanged in spirit (source-tagged, session-scoped) but switches to `{ session_id, elapsed_sec, source }`.
+- **`flint.markQuestion()` removed.** No direct replacement — plugins emit their own signal via `flint.signal("mark", payload?)` or `flint.emit("signal:mark", payload?)`, which runs the full before → after pipeline without any core side effect.
+- **`questions_done` removed from engine state, recovery file, session JSON, SQLite cache, and all frontend types.** The Rust `EngineState.questions_done`, `TimerStateRecovery.questions_done`, session-file `questions_done`, `sessions.questions_done` column, and every TS mirror field are gone.
+- **`mark_question` Tauri command removed.** Callers get an "unknown command" error — this is intentional; the surface is a core-routing primitive, not a user-callable command.
+- **`question:marked` Tauri event removed.** No more core-fired event for marks. The `signal:mark` JS-side emit is the only route.
+- **UI deletions.** The `Q` indicator in the status bar, `qN` badge in the timer display, `QUESTIONS` stat rows in the stats dashboard and session detail, and `q{n}` row hint in the session log are gone from core. Pure sandbox default — the future `@flint/plugin-lockin` plugin re-adds them via `flint.registerView`.
+
+### Migrations (automatic)
+
+- **Session JSON.** Pre-v0.1.2 files carry a top-level `questions_done`. On any read path (cache rebuild, live upsert, export), a shim moves a non-zero value into `custom_metadata["lockin.questions_done"]` before any downstream consumer sees it. Zero counts are dropped (no signal). Files themselves are not rewritten; the shim runs on each read, which is idempotent.
+- **SQLite cache.** The old cache carries a `questions_done` column. On first boot after upgrade, a schema-version check detects the stale column, drops the `sessions` table, recreates it with the current schema, and auto-rebuilds from session JSON. No action required; the message `[flint] rebuilding cache (schema v2 upgrade)` appears once in console.
+
+### Additions
+
+- **`custom_metadata: Record<string, JSONValue>` on session JSON.** Plugins mutate `ctx.custom_metadata` inside a `before:session:stop` hook; the finalizer merges the map into the session file. Key convention: `"<plugin-id>.<field>"`.
+- **`flint.signal(name, payload?)` API.** Sugar over `flint.emit` with the standard `signal:*` namespace and defaulted `source: "plugin"`. Runs before → after pipeline; cancellation semantics identical to every other Flint hook.
+- **Keybinding invariant.** Core keyboard shortcuts (`Space`, `Escape`, `Enter`, `Ctrl+P`) are reserved routes; their physical keys and emitted signals are fixed. Plugins subscribe to the signals via `flint.on(…)` rather than binding keys directly. Non-reserved keys remain available for `registerCommand({ hotkey })` use.
+- **New invariant: "Enter emits `signal:mark`. Core does not handle the signal. Plugins do."** Core holds no counter, writes no state, renders no UI for marks. Historical `questions_done` surfaces in `custom_metadata["lockin.questions_done"]` on read.
+
+### Why
+
+This carve-out is the foundation for the v0.2.0 plugin-SDK work. Every future behavior plugin (Lock-In, Exam Mode, Flowtime) binds to the same `signal:*` + `custom_metadata` primitives these changes establish. Without it, the "Obsidian of timers" pitch had a hardcoded question counter baked into the engine — a Lock-In-shaped bleed-through that would have forced every future plugin to either live with the name or negotiate a core-schema change. Direction 1 of the plan's bidirectional validation — "no plugins installed → Enter is inert" — now holds true in code.
+
+### Built-in plugins
+
+- **Stopwatch `mark-lap`** no longer calls the removed `markQuestion`. Lap counts live entirely in plugin storage (`flint.storage.get/set`), reset on `session:start` / `session:complete` / `session:cancel`. The lap primitive becomes internal to the Stopwatch plugin — no new signal name carried forward.
+- **Pomodoro** unchanged. The v0.1.0 audit already confirmed zero question-assumption residue; this release doesn't touch the plugin.
+
 ## [0.1.1] — 2026-04-17 — Branding fix
 
 - Replaced placeholder Tauri icons with Flint branding across Windows (`.ico`), macOS (`.icns`), and installer assets.

@@ -41,7 +41,7 @@ See `## Invariants` below for hard NEVER-break rules.
 
 Handlers tracked per plugin id, auto-cleared on reload. `registerCoreHook` handlers survive reloads.
 
-**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec)`, `session:stop` `(session_id, elapsed_sec, source)`, `interval:next` `(from_type, to_type?, target_sec?, source)`, `question:mark` `(current_count)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
+**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec)`, `session:stop` `(session_id, elapsed_sec, source)`, `interval:next` `(from_type, to_type?, target_sec?, source)`, `signal:mark` `(session_id, elapsed_sec, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
 
 **After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. Use `interval:next` to intercept transitions.
 
@@ -112,7 +112,8 @@ interface FlintPluginAPI {
   registerCommand(cmd);
   // engine (wrap in before-hooks for cancellation)
   getTimerState(); getCurrentSession();
-  nextInterval(); stopSession(); pauseSession(); resumeSession(); markQuestion();
+  nextInterval(); stopSession(); pauseSession(); resumeSession();
+  signal(name, payload?);               // sugar over emit for signal:* namespace
   setFirstInterval(spec); setNextInterval(spec);
   // UI
   registerView(slot, renderFn); prompt(opts);
@@ -156,9 +157,10 @@ Right-click menus are disabled app-wide. Item actions use Obsidian-style hover-r
 
 ## Keyboard map
 
-Fixed, non-configurable:
+**Keybinding invariant:** Core keyboard shortcuts (Space, Escape, Enter, Ctrl+P) are reserved routes. Their physical keys and their emitted signals are fixed and non-configurable. Plugins subscribe to signals via flint.on(…) — they do not bind keys directly. Non-reserved keys remain available for plugin registerCommand({ hotkey }) use.
+
 - `Space` — start / pause / resume
-- `Enter` — mark question (running or paused)
+- `Enter` — emits `signal:mark` during a running session; inert in core (plugins subscribe)
 - `Escape` — stop-confirm, or close modal
 
 App shortcuts (also commands):
@@ -191,6 +193,7 @@ App shortcuts (also commands):
 - **Context menu stays disabled.** No right-click menus.
 - **Config overrides are session-scoped.** Never persist preset overrides to `config.toml`. `SessionOverridesState` exists to keep experimentation safe.
 - **Before-hook coverage stays complete.** Wrap any new timer action in a JS-side wrapper that calls `runBeforeHooks(...)` first. Keyboard, palette, overlay, tray all converge on these wrappers — don't add a fourth path straight to `invoke`.
+- **Enter emits `signal:mark`. Core does not handle the signal. Plugins do.** The keyboard route fires `runEmitPipeline("signal:mark", …)`; core holds no counter, writes no state, renders no UI for marks. Plugins subscribe via `flint.on("signal:mark", …)` or cancel via `flint.hook("signal:mark", …)`. Historical `questions_done` migrates to `custom_metadata["lockin.questions_done"]` on read.
 
 ## Plugin developer guide
 
