@@ -46,6 +46,9 @@ Cargo.lock.bak
 # Graphify knowledge graph output
 graphify-out/
 
+# Local review docs (not PR copy)
+docs/SANDBOX_STABILITY_PLAN.md
+
 # Claude Code local runtime state (shared .claude/commands and settings.json stay tracked)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
