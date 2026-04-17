@@ -91,8 +91,3 @@ export function subscribePromptQueue(listener: Listener): () => void {
   };
 }
 
-/** Test/debug helper: clear the queue without resolving. Not exposed to plugins. */
-export function _clearPromptQueue(): void {
-  queue.length = 0;
-  notify();
-}

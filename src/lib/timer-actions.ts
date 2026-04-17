@@ -16,10 +16,8 @@
  * pipeline entirely and dispatches `invoke(...)` synchronously. With no
  * plugin subscribed, Space pause is exactly as fast as before.
  *
- * Event names match the after-event names already shipped by Rust where
- * possible (`session:pause`, `session:resume`, `session:cancel`) and
- * introduce new before-only verbs where the action does not have a clean
- * after-event match (`interval:next`).
+ * Event names match the after-event names already shipped by Rust
+ * (`session:pause`, `session:resume`, `session:cancel`).
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { HookContext } from "./hook-registry";
@@ -121,16 +119,3 @@ export async function wrappedStop(
   );
 }
 
-export async function wrappedNextInterval(
-  deps: TimerActionDeps,
-  opts: BaseOpts = {},
-): Promise<{ cancelled: boolean }> {
-  const ctx: HookContext = { ...(opts.context ?? {}) };
-  return runAction(
-    deps,
-    "interval:next",
-    ctx,
-    () => invoke("next_interval"),
-    "next_interval",
-  );
-}

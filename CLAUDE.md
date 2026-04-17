@@ -41,7 +41,7 @@ See `## Invariants` below for hard NEVER-break rules.
 
 Handlers tracked per plugin id, auto-cleared on reload. `registerCoreHook` handlers survive reloads.
 
-**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec?)`, `session:cancel` `(source?)` — fired by `wrappedStop` before `invoke("stop_session")`, `interval:next` `(from_type, to_type?, target_sec?, source)`, `signal:mark` `(session_id, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
+**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec?)`, `session:cancel` `(source?)` — fired by `wrappedStop` before `invoke("stop_session")`, `signal:mark` `(session_id, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
 
 **After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. `session:cancel` also has a before phase (see above) dispatched from `wrappedStop`; the after-phase fires once Rust has finalised. Use `interval:next` to intercept transitions.
 
@@ -81,7 +81,7 @@ setFirstInterval({ type, target_sec?, metadata? }): Promise<void>
 setNextInterval({ type, target_sec?, metadata? }): Promise<void>
 ```
 
-Push into a per-session pending slot in `EngineState`. Engine consumes then clears — push a fresh directive every transition. `setFirstInterval` is called from `before:session:start`; `setNextInterval` from `after:interval:end` or `before:interval:next`. Try/catch wrapped in built-ins; no-ops on older hosts. See `src-tauri/plugins/pomodoro/index.js` for the production pattern (500 ms transition-deferral guard, `transitioning` flag).
+Push into a per-session pending slot in `EngineState`. Engine consumes then clears — push a fresh directive every transition. `setFirstInterval` is called from `before:session:start`; `setNextInterval` from `after:interval:end`. Try/catch wrapped in built-ins; no-ops on older hosts. See `src-tauri/plugins/pomodoro/index.js` for the production pattern (500 ms transition-deferral guard, `transitioning` flag).
 
 **Custom timer modes:** manifest `"timer_mode": true` auto-registers in tray, `Ctrl+1..9`, default-mode dropdown, quick-start bar. No interval pushed → legacy untimed-focus (stopwatch-like).
 
