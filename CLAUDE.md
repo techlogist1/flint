@@ -196,6 +196,7 @@ App shortcuts (also commands):
 - **Config overrides are session-scoped.** Never persist preset overrides to `config.toml`. `SessionOverridesState` exists to keep experimentation safe.
 - **Before-hook coverage stays complete.** Wrap any new timer action in a JS-side wrapper that calls `runBeforeHooks(...)` first. Keyboard, palette, overlay, tray all converge on these wrappers — don't add a fourth path straight to `invoke`.
 - **Enter emits `signal:mark`. Core does not handle the signal. Plugins do.** The keyboard route fires `runEmitPipeline("signal:mark", …)`; core holds no counter, writes no state, renders no UI for marks. Plugins subscribe via `flint.on("signal:mark", …)` or cancel via `flint.hook("signal:mark", …)`. Historical `questions_done` migrates to `custom_metadata["lockin.questions_done"]` on read.
+- **Release asset filenames do not contain version numbers.** Download URLs in the README (`/releases/latest/download/Flint_x64-setup.exe`, `/Flint_x64_en-US.msi`, `/Flint_aarch64.dmg`, `/Flint_x64.dmg`) must stay stable across releases, so `.github/workflows/release.yml` strips the `_<version>_` segment from each bundle's basename before uploading to the draft release. Don't re-introduce `${{ github.ref_name }}` or version interpolation into the uploaded filename.
 
 ## Plugin developer guide
 

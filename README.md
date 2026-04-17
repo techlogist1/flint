@@ -18,10 +18,10 @@ Grab the latest installer from the [releases page](https://github.com/techlogist
 
 | Platform | File |
 | --- | --- |
-| Windows (MSI) | [`Flint_x64_en-US.msi`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64_en-US.msi) |
-| Windows (EXE) | [`Flint_x64-setup.exe`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64-setup.exe) |
-| macOS (Apple Silicon) | [`Flint_aarch64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_aarch64.dmg) |
-| macOS (Intel) | [`Flint_x64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_0.1.0_x64.dmg) |
+| Windows (MSI) | [`Flint_x64_en-US.msi`](https://github.com/techlogist1/flint/releases/latest/download/Flint_x64_en-US.msi) |
+| Windows (EXE) | [`Flint_x64-setup.exe`](https://github.com/techlogist1/flint/releases/latest/download/Flint_x64-setup.exe) |
+| macOS (Apple Silicon) | [`Flint_aarch64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_aarch64.dmg) |
+| macOS (Intel) | [`Flint_x64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_x64.dmg) |
 
 Binaries are unsigned for v0.1 — macOS: right-click → **Open**. Windows: SmartScreen → **More info** → **Run anyway**. Linux builds and signed binaries will land in a later release.
 

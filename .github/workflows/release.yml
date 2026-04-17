@@ -57,14 +57,36 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build and publish Tauri app
+      - name: Build Tauri app
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Flint ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG.md for release notes."
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Rename bundles (strip version from filename)
+        id: rename
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p release-assets
+          echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            base=$(basename "$f")
+            newbase=${base//_${VERSION}_/_}
+            cp "$f" "release-assets/$newbase"
+            echo "  $base -> $newbase"
+          done
+          ls -la release-assets/
+
+      - name: Publish to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Flint ${{ github.ref_name }}"
+          body: "See CHANGELOG.md for release notes."
+          draft: true
+          prerelease: false
+          files: release-assets/*
