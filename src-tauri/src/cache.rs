@@ -23,7 +23,6 @@ pub struct CachedSession {
     pub duration_sec: i64,
     pub mode: String,
     pub tags: Vec<String>,
-    pub questions_done: i64,
     pub completed: bool,
 }
 
@@ -46,7 +45,6 @@ pub struct IntervalView {
 pub struct TodayStats {
     pub focus_sec: i64,
     pub session_count: i64,
-    pub questions_done: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,7 +79,6 @@ pub struct LifetimeTotals {
 pub struct RangeStats {
     pub total_focus_sec: i64,
     pub total_sessions: i64,
-    pub total_questions: i64,
     pub current_streak: i64,
     pub longest_streak: i64,
     pub daily: Vec<DailyBucket>,
@@ -103,6 +100,11 @@ fn open_connection() -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Cache schema version. Bumped whenever the on-disk SQLite layout changes in
+/// a way that a pre-upgrade cache.db cannot satisfy. On mismatch, `initialize`
+/// drops and rebuilds from the session JSON source of truth.
+const SCHEMA_VERSION: i64 = 2;
+
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
@@ -113,7 +115,6 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
             duration_sec INTEGER NOT NULL,
             mode TEXT NOT NULL,
             tags TEXT NOT NULL,
-            questions_done INTEGER DEFAULT 0,
             completed INTEGER DEFAULT 1,
             intervals TEXT NOT NULL DEFAULT '[]'
         );
@@ -122,6 +123,32 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Returns true if the existing `sessions` table matches the current schema.
+/// A `questions_done` column on disk means we're running against a pre-v0.1.2
+/// cache that still carries the removed column — callers should drop and
+/// rebuild.
+fn schema_matches(conn: &Connection) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(sessions)")
+        .map_err(|e| e.to_string())?;
+    let cols: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    if cols.is_empty() {
+        // Table doesn't exist yet — ensure_schema will create it.
+        return Ok(true);
+    }
+    Ok(!cols.iter().any(|c| c == "questions_done"))
+}
+
+fn drop_sessions_table(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch("DROP TABLE IF EXISTS sessions;")
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -173,10 +200,6 @@ fn parse_session_json(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let questions_done = value
-        .get("questions_done")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
     let completed = value
         .get("completed")
         .and_then(|v| v.as_bool())
@@ -212,7 +235,6 @@ fn parse_session_json(
             duration_sec,
             mode,
             tags,
-            questions_done,
             completed,
         },
         intervals,
@@ -227,7 +249,7 @@ fn insert_session(
     let tags_json = serde_json::to_string(&session.tags).unwrap_or_else(|_| "[]".into());
     let intervals_json = serde_json::to_string(intervals).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "INSERT OR REPLACE INTO sessions (id, started_at, ended_at, duration_sec, mode, tags, questions_done, completed, intervals) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT OR REPLACE INTO sessions (id, started_at, ended_at, duration_sec, mode, tags, completed, intervals) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             session.id,
             session.started_at,
@@ -235,7 +257,6 @@ fn insert_session(
             session.duration_sec,
             session.mode,
             tags_json,
-            session.questions_done,
             session.completed as i64,
             intervals_json,
         ],
@@ -265,16 +286,17 @@ pub fn rebuild(conn: &mut Connection) -> Result<(), String> {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
+        storage::migrate_session_json(&mut value);
         let Some((session, intervals)) = parse_session_json(&value) else {
             continue;
         };
         let tags_json = serde_json::to_string(&session.tags).unwrap_or_else(|_| "[]".into());
         let intervals_json = serde_json::to_string(&intervals).unwrap_or_else(|_| "[]".into());
         tx.execute(
-            "INSERT OR REPLACE INTO sessions (id, started_at, ended_at, duration_sec, mode, tags, questions_done, completed, intervals) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO sessions (id, started_at, ended_at, duration_sec, mode, tags, completed, intervals) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session.id,
                 session.started_at,
@@ -282,7 +304,6 @@ pub fn rebuild(conn: &mut Connection) -> Result<(), String> {
                 session.duration_sec,
                 session.mode,
                 tags_json,
-                session.questions_done,
                 session.completed as i64,
                 intervals_json,
             ],
@@ -297,6 +318,14 @@ pub fn rebuild(conn: &mut Connection) -> Result<(), String> {
 
 pub fn initialize() -> Result<Connection, String> {
     let mut conn = open_connection()?;
+    // v0.1.2 schema version check: if a pre-v0.1.2 cache.db is on disk with
+    // the removed `questions_done` column, drop the table so ensure_schema
+    // recreates it clean, then rebuild from session JSON. The cache is
+    // rebuildable by invariant — this is just the automated trigger.
+    if !schema_matches(&conn)? {
+        println!("[flint] rebuilding cache (schema v{} upgrade)", SCHEMA_VERSION);
+        drop_sessions_table(&conn)?;
+    }
     ensure_schema(&conn)?;
     let file_count = count_session_files()?;
     let rows = row_count(&conn)?;
@@ -314,7 +343,14 @@ pub fn upsert_from_file(
     conn: &Connection,
     session_json: &serde_json::Value,
 ) -> Result<(), String> {
-    if let Some((session, intervals)) = parse_session_json(session_json) {
+    // Apply the v0.1.2 migration shim before parsing so pre-v0.1.2 session
+    // files with top-level `questions_done` surface it under
+    // `custom_metadata["lockin.questions_done"]`. Cache only reads fields it
+    // cares about, but the shim is cheap and keeps ingestion semantics
+    // consistent with the source-of-truth on-disk file.
+    let mut migrated = session_json.clone();
+    storage::migrate_session_json(&mut migrated);
+    if let Some((session, intervals)) = parse_session_json(&migrated) {
         insert_session(conn, &session, &intervals)?;
     }
     Ok(())
@@ -340,7 +376,6 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedSession> {
         duration_sec: row.get("duration_sec")?,
         mode: row.get("mode")?,
         tags,
-        questions_done: row.get("questions_done")?,
         completed: completed_raw != 0,
     })
 }
@@ -350,8 +385,8 @@ pub fn list_sessions(
     limit: Option<i64>,
 ) -> Result<Vec<CachedSession>, String> {
     let sql = match limit {
-        Some(_) => "SELECT id, started_at, ended_at, duration_sec, mode, tags, questions_done, completed FROM sessions ORDER BY started_at DESC LIMIT ?1".to_string(),
-        None => "SELECT id, started_at, ended_at, duration_sec, mode, tags, questions_done, completed FROM sessions ORDER BY started_at DESC".to_string(),
+        Some(_) => "SELECT id, started_at, ended_at, duration_sec, mode, tags, completed FROM sessions ORDER BY started_at DESC LIMIT ?1".to_string(),
+        None => "SELECT id, started_at, ended_at, duration_sec, mode, tags, completed FROM sessions ORDER BY started_at DESC".to_string(),
     };
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = if let Some(l) = limit {
@@ -370,7 +405,7 @@ pub fn list_sessions(
 
 pub fn get_session_detail(conn: &Connection, id: &str) -> Result<Option<SessionDetail>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, started_at, ended_at, duration_sec, mode, tags, questions_done, completed, intervals FROM sessions WHERE id = ?1")
+        .prepare("SELECT id, started_at, ended_at, duration_sec, mode, tags, completed, intervals FROM sessions WHERE id = ?1")
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query(params![id]).map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -388,7 +423,6 @@ pub fn get_session_detail(conn: &Connection, id: &str) -> Result<Option<SessionD
                 duration_sec: row.get("duration_sec").map_err(|e| e.to_string())?,
                 mode: row.get("mode").map_err(|e| e.to_string())?,
                 tags,
-                questions_done: row.get("questions_done").map_err(|e| e.to_string())?,
                 completed: completed_raw != 0,
             },
             intervals,
@@ -432,7 +466,7 @@ pub fn today_stats(conn: &Connection, now: DateTime<Utc>) -> Result<TodayStats, 
         .and_utc();
     let end = start + Duration::days(1);
     let mut stmt = conn
-        .prepare("SELECT duration_sec, questions_done, intervals FROM sessions WHERE started_at >= ?1 AND started_at < ?2 AND completed = 1")
+        .prepare("SELECT duration_sec, intervals FROM sessions WHERE started_at >= ?1 AND started_at < ?2 AND completed = 1")
         .map_err(|e| e.to_string())?;
     let mut rows = stmt
         .query(params![start.to_rfc3339(), end.to_rfc3339()])
@@ -440,15 +474,12 @@ pub fn today_stats(conn: &Connection, now: DateTime<Utc>) -> Result<TodayStats, 
     let mut out = TodayStats {
         focus_sec: 0,
         session_count: 0,
-        questions_done: 0,
     };
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let duration_sec: i64 = row.get(0).map_err(|e| e.to_string())?;
-        let questions_done: i64 = row.get(1).map_err(|e| e.to_string())?;
-        let intervals_raw: String = row.get(2).map_err(|e| e.to_string())?;
+        let intervals_raw: String = row.get(1).map_err(|e| e.to_string())?;
         out.focus_sec += focus_sec_for_session(duration_sec, &intervals_raw);
         out.session_count += 1;
-        out.questions_done += questions_done;
     }
     Ok(out)
 }
@@ -496,7 +527,7 @@ pub fn range_stats(
     end: DateTime<Utc>,
 ) -> Result<RangeStats, String> {
     let mut stmt = conn
-        .prepare("SELECT started_at, duration_sec, questions_done, tags, intervals FROM sessions WHERE started_at >= ?1 AND started_at < ?2 AND completed = 1 ORDER BY started_at ASC")
+        .prepare("SELECT started_at, duration_sec, tags, intervals FROM sessions WHERE started_at >= ?1 AND started_at < ?2 AND completed = 1 ORDER BY started_at ASC")
         .map_err(|e| e.to_string())?;
     let mut rows = stmt
         .query(params![start.to_rfc3339(), end.to_rfc3339()])
@@ -504,7 +535,6 @@ pub fn range_stats(
 
     let mut total_focus_sec: i64 = 0;
     let mut total_sessions: i64 = 0;
-    let mut total_questions: i64 = 0;
     let mut daily_map: BTreeMap<NaiveDate, (i64, i64)> = BTreeMap::new();
     let mut tag_map: HashMap<String, (i64, i64)> = HashMap::new();
     let mut days_with_focus: Vec<NaiveDate> = Vec::new();
@@ -512,9 +542,8 @@ pub fn range_stats(
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let started_raw: String = row.get(0).map_err(|e| e.to_string())?;
         let duration_sec: i64 = row.get(1).map_err(|e| e.to_string())?;
-        let questions_done: i64 = row.get(2).map_err(|e| e.to_string())?;
-        let tags_raw: String = row.get(3).map_err(|e| e.to_string())?;
-        let intervals_raw: String = row.get(4).map_err(|e| e.to_string())?;
+        let tags_raw: String = row.get(2).map_err(|e| e.to_string())?;
+        let intervals_raw: String = row.get(3).map_err(|e| e.to_string())?;
 
         let Some(started) = parse_started(&started_raw) else {
             continue;
@@ -527,7 +556,6 @@ pub fn range_stats(
 
         total_focus_sec += focus;
         total_sessions += 1;
-        total_questions += questions_done;
 
         let bucket = daily_map.entry(day).or_insert((0, 0));
         bucket.0 += focus;
@@ -586,7 +614,6 @@ pub fn range_stats(
     Ok(RangeStats {
         total_focus_sec,
         total_sessions,
-        total_questions,
         current_streak,
         longest_streak,
         daily,

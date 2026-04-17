@@ -83,7 +83,6 @@ pub struct RecoveryFile {
     pub mode: String,
     pub status: String,
     pub tags: Vec<String>,
-    pub questions_done: u32,
     pub intervals: Vec<Interval>,
     pub current_interval: Option<Interval>,
     #[serde(default)]
@@ -109,7 +108,6 @@ pub struct RecoverySnapshot {
     mode: String,
     status: String,
     tags: Vec<String>,
-    questions_done: u32,
     intervals: Vec<Interval>,
     current_interval: Option<Interval>,
 }
@@ -131,7 +129,6 @@ impl RecoverySnapshot {
                 TimerStatus::Idle => "idle".into(),
             },
             tags: state.tags.clone(),
-            questions_done: state.questions_done,
             intervals: state.completed_intervals.clone(),
             current_interval: state.current_interval.clone(),
         })
@@ -145,7 +142,6 @@ impl RecoverySnapshot {
             mode: self.mode,
             status: self.status,
             tags: self.tags,
-            questions_done: self.questions_done,
             intervals: self.intervals,
             current_interval: self.current_interval,
             plugin_data: serde_json::json!({}),
@@ -321,6 +317,40 @@ pub fn rename_broken(path: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
+/// Migration shim for pre-v0.1.2 session JSON files. If the top-level
+/// `questions_done` field is present (the old schema), move it under
+/// `custom_metadata["lockin.questions_done"]` so the historical count is
+/// still discoverable by the future Lock-In plugin.
+///
+/// Idempotent: runs only if `questions_done` exists AND the target slot is
+/// absent. Safe on already-migrated files (no-op) and on fresh v0.1.2 files
+/// (no-op). Called on every session-JSON read path before downstream parsers
+/// see the value.
+pub fn migrate_session_json(value: &mut serde_json::Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    let Some(q) = obj.remove("questions_done") else {
+        return;
+    };
+    // Only map non-zero integer values — a zero count carries no signal and
+    // would just clutter every historical session's custom_metadata.
+    let n = q.as_i64().unwrap_or(0);
+    if n == 0 {
+        return;
+    }
+    let meta = obj
+        .entry("custom_metadata".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(meta_obj) = meta.as_object_mut() else {
+        return;
+    };
+    let key = "lockin.questions_done".to_string();
+    if !meta_obj.contains_key(&key) {
+        meta_obj.insert(key, serde_json::json!(n));
+    }
+}
+
 pub fn write_session_file(
     state: &TimerState,
     ended_at: DateTime<Utc>,
@@ -359,15 +389,15 @@ pub fn write_session_file(
 
     let payload = serde_json::json!({
         "id": id,
-        "version": 1,
+        "version": 2,
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_sec": state.elapsed_sec,
         "mode": state.mode,
         "tags": state.tags,
-        "questions_done": state.questions_done,
         "completed": completed,
         "intervals": intervals_json,
+        "custom_metadata": {},
         "plugin_data": {},
     });
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
@@ -402,7 +432,6 @@ mod tests {
         s.elapsed_sec = 42;
         s.mode = "pomodoro".into();
         s.tags = vec!["project".into()];
-        s.questions_done = 3;
         s.current_interval = Some(Interval {
             interval_type: "focus".into(),
             start_sec: 0,
@@ -424,7 +453,6 @@ mod tests {
         assert_eq!(loaded.elapsed_sec, 42);
         assert_eq!(loaded.mode, "pomodoro");
         assert_eq!(loaded.status, "running");
-        assert_eq!(loaded.questions_done, 3);
         assert_eq!(loaded.tags, vec!["project".to_string()]);
         assert!(loaded.current_interval.is_some());
         delete_recovery().ok();

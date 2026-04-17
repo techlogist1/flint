@@ -321,7 +321,6 @@ pub fn start_session(
     state.started_at = Some(Utc::now());
     state.status = TimerStatus::Running;
     state.elapsed_sec = 0;
-    state.questions_done = 0;
     state.mode = mode.clone();
     state.tags = tags.clone();
     state.completed_intervals.clear();
@@ -395,7 +394,6 @@ pub(crate) fn finalize_session(
     let ended_at = Utc::now();
     let session_id = state.session_id.clone().unwrap_or_default();
     let duration_sec = state.elapsed_sec;
-    let questions_done = state.questions_done;
     let ending_tags = state.tags.clone();
 
     let path = storage::write_session_file(state, ended_at, completed)?;
@@ -439,18 +437,10 @@ pub(crate) fn finalize_session(
     } else {
         "session:cancel"
     };
-    let payload = if completed {
-        serde_json::json!({
-            "session_id": session_id,
-            "duration_sec": duration_sec,
-            "questions_done": questions_done,
-        })
-    } else {
-        serde_json::json!({
-            "session_id": session_id,
-            "duration_sec": duration_sec,
-        })
-    };
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "duration_sec": duration_sec,
+    });
     app.emit(event, payload).ok();
 
     state.reset();
@@ -474,26 +464,6 @@ pub fn cancel_session(
 ) -> Result<TimerState, String> {
     let mut state = engine.0.lock().map_err(|e| e.to_string())?;
     finalize_session(&mut state, &app, false)?;
-    Ok(state.clone())
-}
-
-#[tauri::command]
-pub fn mark_question(
-    engine: State<'_, EngineState>,
-    recovery: State<'_, storage::RecoveryWriter>,
-    app: AppHandle,
-) -> Result<TimerState, String> {
-    let mut state = engine.0.lock().map_err(|e| e.to_string())?;
-    if state.status == TimerStatus::Idle {
-        return Err("no active session".into());
-    }
-    state.questions_done += 1;
-    recovery.send_state(&state);
-    app.emit(
-        "question:marked",
-        serde_json::json!({ "total_questions": state.questions_done }),
-    )
-    .ok();
     Ok(state.clone())
 }
 
@@ -1008,7 +978,6 @@ pub fn stats_today(cache_state: State<'_, CacheState>) -> Result<TodayStats, Str
         return Ok(TodayStats {
             focus_sec: 0,
             session_count: 0,
-            questions_done: 0,
         });
     };
     cache::today_stats(conn, Utc::now())
@@ -1024,7 +993,6 @@ pub fn stats_range(
         return Ok(RangeStats {
             total_focus_sec: 0,
             total_sessions: 0,
-            total_questions: 0,
             current_streak: 0,
             longest_streak: 0,
             daily: Vec::new(),
@@ -1197,7 +1165,10 @@ pub fn export_all_sessions() -> Result<String, String> {
             }
             match std::fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<Value>(&content) {
-                    Ok(value) => all_sessions.push(value),
+                    Ok(mut value) => {
+                        storage::migrate_session_json(&mut value);
+                        all_sessions.push(value);
+                    }
                     Err(e) => eprintln!(
                         "[flint] skip malformed session {}: {}",
                         path.display(),

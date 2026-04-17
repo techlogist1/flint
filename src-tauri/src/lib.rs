@@ -137,7 +137,6 @@ fn apply_recovery(rec: storage::RecoveryFile, now: chrono::DateTime<chrono::Utc>
     state.mode = rec.mode;
     state.status = status;
     state.tags = rec.tags;
-    state.questions_done = rec.questions_done;
     state.completed_intervals = rec.intervals;
     state.current_interval = rec.current_interval.map(|mut ci| {
         ci.elapsed_sec += extra_sec;
@@ -334,7 +333,6 @@ pub fn run() {
             commands::resume_session,
             commands::stop_session,
             commands::cancel_session,
-            commands::mark_question,
             commands::get_timer_state,
             commands::next_interval,
             commands::set_first_interval,
@@ -400,7 +398,6 @@ mod tests {
             mode: "pomodoro".into(),
             status: status.into(),
             tags: vec!["project".into()],
-            questions_done: 0,
             intervals: Vec::new(),
             current_interval: Some(Interval {
                 interval_type: "focus".into(),
