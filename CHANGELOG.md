@@ -4,6 +4,20 @@ All notable changes to Flint will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-04-18 — Release hardening
+
+Two bugs that only manifested in installed binaries, invisible during `cargo tauri dev`.
+
+### Fixes
+
+- **fix(csp): plugins now activate correctly in release builds.** The Tauri CSP did not grant `'unsafe-eval'` to `script-src`, so every plugin's `new Function` activation in the sandbox threw `EvalError` the moment the app loaded over `tauri://localhost`. Pomodoro, Stopwatch, Countdown, Session Log and Stats all failed silently — Pomodoro's symptom was the timer freezing at `00:00` with no break transition. `cargo tauri dev` loads over HTTP with no CSP, so the regression had been latent since `f10110b` (pre-v0.1.1). CSP now allows `'unsafe-eval'`, aligning with the sandbox's existing `npm install`-level trust model.
+- **ci(release): stable asset filenames across versions.** `.github/workflows/release.yml` strips the `_<version>_` segment from each bundled artifact's basename before uploading, so `/releases/latest/download/Flint_x64_en-US.msi` (and siblings) resolve for every future release. README download links switched to the versionless form.
+
+### Docs
+
+- CLAUDE.md plugin-sandbox section now documents the CSP `'unsafe-eval'` requirement and the release-vs-dev CSP enforcement difference.
+- New invariant: release asset filenames do not contain version numbers.
+
 ## [0.1.2] — 2026-04-17 — Sandbox Stability
 
 The last Lock-In-specific assumption is carved out of core. Question semantics no longer live in the Rust engine, the session schema, the SQLite cache, the frontend types, or the UI. What replaces them is the generic hook foundation every v0.2.0 behavior plugin will inherit.
