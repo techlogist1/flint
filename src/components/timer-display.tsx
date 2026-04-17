@@ -315,8 +315,6 @@ function HintLine({
     <div className="mt-1 text-[11px] lowercase tracking-wide text-[var(--text-muted)]">
       <span className="text-[var(--text-secondary)]">[Space]</span>{" "}
       {isRunning ? "pause" : "resume"} <span>·</span>{" "}
-      <span className="text-[var(--text-secondary)]">[Enter]</span> mark{" "}
-      <span>·</span>{" "}
       <span className="text-[var(--text-secondary)]">[Esc]</span> stop
     </div>
   );

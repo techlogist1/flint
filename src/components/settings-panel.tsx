@@ -231,7 +231,6 @@ export function SettingsPanel({
 
           <Section title="KEYBINDINGS">
             <KeybindRow label="start / pause / resume" value="Space" fixed />
-            <KeybindRow label="mark question" value="Enter" fixed />
             <KeybindRow label="stop session" value="Escape" fixed />
             <KeybindRow
               label="toggle sidebar"
