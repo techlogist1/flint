@@ -41,9 +41,11 @@ See `## Invariants` below for hard NEVER-break rules.
 
 Handlers tracked per plugin id, auto-cleared on reload. `registerCoreHook` handlers survive reloads.
 
-**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec)`, `session:stop` `(session_id, elapsed_sec, source)`, `interval:next` `(from_type, to_type?, target_sec?, source)`, `signal:mark` `(session_id, elapsed_sec, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
+**Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec?)`, `session:cancel` `(source?)` — fired by `wrappedStop` before `invoke("stop_session")`, `interval:next` `(from_type, to_type?, target_sec?, source)`, `signal:mark` `(session_id, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
 
-**After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. Use `interval:next` to intercept transitions.
+**After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. `session:cancel` also has a before phase (see above) dispatched from `wrappedStop`; the after-phase fires once Rust has finalised. Use `interval:next` to intercept transitions.
+
+> **No `session:stop` event.** The prior docs listed a `session:stop` before-hook; the actual pre-finalize event is `before:session:cancel` because `wrappedStop` (`src/lib/timer-actions.ts`) routes user-initiated stop through the cancel verb (matches the Rust-side after-event name).
 
 ## Command system (`flint.registerCommand`)
 
@@ -91,9 +93,9 @@ registerView(slot, renderFn: () => RenderSpec): () => void
 
 Host calls `renderFn` on repaint. Force repaint via `flint.emit("view:dirty", { slot })`.
 
-**Slots:** `sidebar-tab`, `settings`, `post-session`, `status-bar`.
+**Slots:** `sidebar-tab` (RenderSpec via `registerView`, rendered by `CommunityTabBody` in `sidebar.tsx`), `status-bar` (text-only via `renderSlot`, rendered by `status-bar.tsx`). Typed slot names `settings` and `post-session` exist in `src/lib/plugins.ts` but have no host consumer yet — plugins that register into them are no-ops until v0.2.0.
 
-**Widget types** (unknown → muted placeholder): `container` (`direction?`, `gap?`, `padding?`, `children[]`), `text` (`value`, `variant?: "title"|"body"|"muted"|"code"`), `stat-row` (`label`, `value`, `accent?`), `bar-chart` / `line-chart` (`data`, `height?`, `unit?`), `heatmap` (`cells:{date,value}[]`, `weeks?`), `table` (`columns`, `rows`, `maxRows?`), `button` (`label`, `command`, `icon?`). Every plugin-authored render is wrapped in `FlintErrorBoundary`.
+**Widget types** (unknown → muted placeholder): `container` (`direction?: "row"|"column"`, `gap?`, `padding?`, `align?`, `justify?`, `children[]`), `text` (`value`, `style?: "heading"|"label"|"muted"|"accent"|"mono"|"body"`), `stat` (`label`, `value`, `unit?`), `stat-row` (`stats: {label, value, unit?}[]`), `bar-chart` / `line-chart` (`data: {label, value}[]`, `height?`), `heatmap` (`data: {date, value}[]`), `table` (`columns: string[]`, `rows: (string|number)[][]`), `list` (`items: {primary, secondary?, icon?}[]`), `progress` (`value`, `max`, `label?`), `button` (`label`, `commandId`), `divider`, `spacer` (`size?`). Every plugin-authored render is wrapped in `FlintErrorBoundary`.
 
 ## Prompt primitive (`flint.prompt`)
 
@@ -127,7 +129,13 @@ interface FlintPluginAPI {
 }
 ```
 
-Return shapes: `stats.today → {sessions, focus_sec, questions}`, `stats.range → {buckets:{date,focus_sec}[], total_sec}`, `stats.heatmap → {cells:{date,value}[]}`, `stats.lifetime → {sessions, focus_sec, questions, longest_streak_days}`. `presets.save(draft)` upserts by id and preserves `created_at`.
+Return shapes (match Rust structs in `src-tauri/src/cache.rs`):
+- `stats.today → {focus_sec, session_count}`
+- `stats.range → {total_focus_sec, total_sessions, current_streak, longest_streak, daily:{date, focus_sec, session_count}[], tags:{tag, focus_sec, session_count}[]}`
+- `stats.heatmap → {date, focus_sec}[]`
+- `stats.lifetime → {longest_session_sec, best_day_date?, best_day_focus_sec, all_time_focus_sec}`
+
+`presets.save(draft)` upserts by id and preserves `created_at`.
 
 ## Plugin sandbox
 
@@ -195,7 +203,7 @@ App shortcuts (also commands):
 - **Context menu stays disabled.** No right-click menus.
 - **Config overrides are session-scoped.** Never persist preset overrides to `config.toml`. `SessionOverridesState` exists to keep experimentation safe.
 - **Before-hook coverage stays complete.** Wrap any new timer action in a JS-side wrapper that calls `runBeforeHooks(...)` first. Keyboard, palette, overlay, tray all converge on these wrappers — don't add a fourth path straight to `invoke`.
-- **Enter emits `signal:mark`. Core does not handle the signal. Plugins do.** The keyboard route fires `runEmitPipeline("signal:mark", …)`; core holds no counter, writes no state, renders no UI for marks. Plugins subscribe via `flint.on("signal:mark", …)` or cancel via `flint.hook("signal:mark", …)`. Historical `questions_done` migrates to `custom_metadata["lockin.questions_done"]` on read.
+- **Enter emits `signal:mark`. Core does not handle the signal. Plugins do.** The keyboard route fires `runEmitPipeline("signal:mark", …)`; core holds no counter, writes no state, renders no UI for marks. Plugins subscribe via `flint.on("signal:mark", …)` or cancel via `flint.hook("signal:mark", …)`. A `custom_metadata: Record<string, JSONValue>` field is reserved on the session JSON schema; a read-path shim in `storage.rs` migrates the historical v0.1.1 `questions_done` field into `custom_metadata["lockin.questions_done"]` so downstream consumers see a uniform shape. **There is no plugin-writable metadata API in v0.1.x** — `finalize_session` always writes `custom_metadata: {}` on new sessions. A `flint.session.setMetadata(key, value)` API plus a `before:session:finalize` pipeline are v0.2.0 scope; until then, plugins persist per-plugin data via `flint.storage.{get,set,delete}` keyed by session id.
 - **Release asset filenames do not contain version numbers.** Download URLs in the README (`/releases/latest/download/Flint_x64-setup.exe`, `/Flint_x64_en-US.msi`, `/Flint_aarch64.dmg`, `/Flint_x64.dmg`) must stay stable across releases, so `.github/workflows/release.yml` strips the `_<version>_` segment from each bundle's basename before uploading to the draft release. Don't re-introduce `${{ github.ref_name }}` or version interpolation into the uploaded filename.
 
 ## Plugin developer guide

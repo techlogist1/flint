@@ -48,6 +48,7 @@ graphify-out/
 
 # Local review docs (not PR copy)
 docs/SANDBOX_STABILITY_PLAN.md
+docs/PRE_V013_AUDIT.md
 
 # Claude Code local runtime state (shared .claude/commands and settings.json stay tracked)
 .claude/settings.local.json

@@ -4,18 +4,25 @@ All notable changes to Flint will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.3] — 2026-04-18 — Release hardening
+## [0.1.3] — 2026-04-18 — Bugfix + Stability
 
-Two bugs that only manifested in installed binaries, invisible during `cargo tauri dev`.
+v0.1.3 is the first release where plugin activation works end-to-end in installed binaries. The headline bug — CSP blocking every plugin's sandbox — had been latent since before v0.1.1 but only surfaced in release builds (dev mode loads over HTTP with no CSP). If you tried Flint before and noticed plugins were broken, this release fixes it.
 
 ### Fixes
 
-- **fix(csp): plugins now activate correctly in release builds.** The Tauri CSP did not grant `'unsafe-eval'` to `script-src`, so every plugin's `new Function` activation in the sandbox threw `EvalError` the moment the app loaded over `tauri://localhost`. Pomodoro, Stopwatch, Countdown, Session Log and Stats all failed silently — Pomodoro's symptom was the timer freezing at `00:00` with no break transition. `cargo tauri dev` loads over HTTP with no CSP, so the regression had been latent since `f10110b` (pre-v0.1.1). CSP now allows `'unsafe-eval'`, aligning with the sandbox's existing `npm install`-level trust model.
+- **fix(csp): plugins activate correctly in release builds.** The Tauri CSP did not grant `'unsafe-eval'` to `script-src`, so every plugin's `new Function` sandbox activation threw `EvalError` as soon as the app loaded over `tauri://localhost`. Pomodoro, Stopwatch, Countdown, Session Log and Stats all failed silently — Pomodoro's symptom was the timer freezing at `00:00` with no break transition. `cargo tauri dev` loads over HTTP with no CSP, so the regression had been latent since `f10110b` (pre-v0.1.1). CSP now allows `'unsafe-eval'`, aligning with the sandbox's existing `npm install`-level trust model.
+- **fix(plugin-host): StrictMode double-activation guard.** A `reloadGenRef` counter short-circuits stale reloads so React 18 StrictMode's dev-mode double-mount no longer registers plugin handlers twice. Production builds (no StrictMode) were unaffected; this cleans up console warnings and subtle double-fire in dev.
+- **fix(ui): removed stale `[enter] mark` keyboard hint.** The timer screen no longer advertises Enter as a "mark" action — Enter has been inert in core since v0.1.2 and the hint was lying about what the key does. Plugins that hook `signal:mark` are unchanged; only the core UI string is gone.
+- **fix(storage): atomic write for `config.toml`.** `config::save` now routes through `storage::write_atomic` like every other durable store, so a crash mid-write can never leave a truncated `config.toml` that the next launch treats as "broken" and reverts. Honors the existing "Atomic writes only" invariant.
 - **ci(release): stable asset filenames across versions.** `.github/workflows/release.yml` strips the `_<version>_` segment from each bundled artifact's basename before uploading, so `/releases/latest/download/Flint_x64_en-US.msi` (and siblings) resolve for every future release. README download links switched to the versionless form.
 
 ### Docs
 
-- CLAUDE.md plugin-sandbox section now documents the CSP `'unsafe-eval'` requirement and the release-vs-dev CSP enforcement difference.
+- **Corrected premature API claims in CLAUDE.md.** v0.1.2 documented a `before:session:stop` hook and a plugin-writable `custom_metadata` field; neither is implemented. The actual pre-finalize event is `before:session:cancel` (dispatched from `wrappedStop`); `custom_metadata` is a reserved schema field, read-path migration only, with `finalize_session` writing `{}`. A real `flint.session.setMetadata(key, value)` API plus a `before:session:finalize` pipeline are scheduled for v0.2.0. Until then, plugins persist per-plugin data through `flint.storage`.
+- **Corrected stats return shapes** in the Plugin API section. Previous doc claimed `stats.today → {sessions, focus_sec, questions}` and `stats.lifetime → {sessions, focus_sec, questions, longest_streak_days}`; real shapes (per `src-tauri/src/cache.rs`) are `{focus_sec, session_count}` and `{longest_session_sec, best_day_date, best_day_focus_sec, all_time_focus_sec}` respectively. `stats.range` and `stats.heatmap` shapes were also corrected.
+- **Corrected render-spec widget list.** Added the `stat`, `list`, `progress`, `divider`, `spacer` widgets that plugin-view-renderer.tsx already supports but docs omitted. Fixed `button.commandId` field name (was `command`) and `text.style` values (`heading|label|muted|accent|mono|body`, not `title|body|muted|code`).
+- **Annotated slot consumers.** `sidebar-tab` (RenderSpec) and `status-bar` (text-only) are the only two slots rendered today; `settings` and `post-session` are reserved names with no host consumer yet.
+- CLAUDE.md plugin-sandbox section documents the CSP `'unsafe-eval'` requirement and the release-vs-dev CSP enforcement difference.
 - New invariant: release asset filenames do not contain version numbers.
 
 ## [0.1.2] — 2026-04-17 — Sandbox Stability
@@ -123,4 +130,7 @@ App shortcuts:
 - `Ctrl+1..9` — switch timer mode (when idle)
 - `1..4` — load pinned preset (when idle, no modifier)
 
+[0.1.3]: https://github.com/techlogist1/flint/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/techlogist1/flint/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/techlogist1/flint/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/techlogist1/flint/releases/tag/v0.1.0

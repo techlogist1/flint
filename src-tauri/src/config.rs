@@ -150,7 +150,7 @@ pub struct Plugins {
 pub fn save(flint_dir: &Path, cfg: &Config) -> Result<(), String> {
     let path = flint_dir.join("config.toml");
     let s = toml::to_string_pretty(cfg).map_err(|e| format!("serialize config: {}", e))?;
-    fs::write(&path, s).map_err(|e| format!("write {}: {}", path.display(), e))
+    crate::storage::write_atomic(&path, s.as_bytes())
 }
 
 pub fn load_or_create(flint_dir: &Path) -> Config {
@@ -175,7 +175,7 @@ pub fn load_or_create(flint_dir: &Path) -> Config {
     let cfg = Config::default();
     match toml::to_string_pretty(&cfg) {
         Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
+            if let Err(e) = crate::storage::write_atomic(&path, s.as_bytes()) {
                 eprintln!("[flint] failed to write default config.toml: {}", e);
             }
         }
