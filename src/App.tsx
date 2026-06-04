@@ -458,6 +458,18 @@ function AppShell() {
     }, 400);
   }, []);
 
+  // FE-APP-4: clear the pending debounced sidebar-width save on unmount so a
+  // teardown/HMR within the 400ms window can't fire update_config after the
+  // component is gone.
+  useEffect(
+    () => () => {
+      if (sidebarSaveTimerRef.current != null) {
+        window.clearTimeout(sidebarSaveTimerRef.current);
+      }
+    },
+    [],
+  );
+
   // Core commands — registered once at mount. Callbacks read state via refs
   // so they never become stale. Dynamic commands (per-plugin mode switch,
   // per-preset load) live in separate effects below that depend on the
@@ -793,11 +805,15 @@ function AppShell() {
           return;
         }
         if (!e.shiftKey && k.length === 1 && k >= "1" && k <= "9") {
+          // FE-APP-6: this branch always consumes Ctrl+digit (it returns
+          // below), so preventDefault unconditionally rather than only on the
+          // idle mode-switch path — otherwise the webview default leaks
+          // through while a session is running.
+          e.preventDefault();
           if (currentMeta?.status === "idle" && view === "timer") {
             const index = Number(k) - 1;
             const modes = timerModesRef.current;
             if (index < modes.length) {
-              e.preventDefault();
               setSelectedMode(modes[index].id);
             }
           }
