@@ -119,7 +119,6 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
             intervals TEXT NOT NULL DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
-        CREATE INDEX IF NOT EXISTS idx_sessions_tags ON sessions(tags);
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -537,7 +536,6 @@ pub fn range_stats(
     let mut total_sessions: i64 = 0;
     let mut daily_map: BTreeMap<NaiveDate, (i64, i64)> = BTreeMap::new();
     let mut tag_map: HashMap<String, (i64, i64)> = HashMap::new();
-    let mut days_with_focus: Vec<NaiveDate> = Vec::new();
 
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let started_raw: String = row.get(0).map_err(|e| e.to_string())?;
@@ -560,7 +558,6 @@ pub fn range_stats(
         let bucket = daily_map.entry(day).or_insert((0, 0));
         bucket.0 += focus;
         bucket.1 += 1;
-        days_with_focus.push(day);
 
         let tags: Vec<String> = serde_json::from_str(&tags_raw).unwrap_or_default();
         if tags.is_empty() {
@@ -601,15 +598,14 @@ pub fn range_stats(
         .collect();
     tags.sort_by_key(|t| std::cmp::Reverse(t.focus_sec));
 
-    // Streaks computed against today, regardless of the range window.
+    // Streaks computed against today, regardless of the range window. We use
+    // the full session history (all_session_days), which is a superset of the
+    // in-range days — so its longest streak already dominates any in-range
+    // longest. RUST-CACHE-6: the previous second compute_streaks over the
+    // in-range subset and the .max() could never change the result; dropped.
     let today = Utc::now().date_naive();
-    // Pull *all* session days up to today for an accurate streak, not just in-range.
     let all_days = all_session_days(conn)?;
     let (current_streak, longest_streak) = compute_streaks(&all_days, today);
-
-    // Longest streak should also take into account the full history to be meaningful.
-    let (_, longest_all) = compute_streaks(&days_with_focus, today);
-    let longest_streak = longest_streak.max(longest_all);
 
     Ok(RangeStats {
         total_focus_sec,
@@ -641,6 +637,10 @@ fn all_session_days(conn: &Connection) -> Result<Vec<NaiveDate>, String> {
 }
 
 pub fn heatmap(conn: &Connection, days: i64) -> Result<Vec<HeatmapCell>, String> {
+    // RUST-CACHE-9: self-protect against days <= 0 regardless of caller
+    // discipline — a negative i64 cast to usize for with_capacity would
+    // otherwise attempt an enormous allocation and invert the cursor loop.
+    let days = days.max(1);
     let end_day = Utc::now().date_naive();
     let start_day = end_day - Duration::days(days - 1);
     let start_dt = start_day.and_hms_opt(0, 0, 0).unwrap().and_utc();
