@@ -101,9 +101,18 @@ function applyState(s: TimerStateView): void {
     completed_intervals: s.completed_intervals,
   };
 
-  tickSnapshot = nextTick;
   metaSnapshot = nextMeta;
-  emitTick();
+  // FE-APP-2 / FIX 8: honor the hidden-stash invariant for meta-driven
+  // refreshes too. While the window is hidden, stash the tick instead of
+  // emitting it (onVisibilityChange applies the freshest on return) so a
+  // lifecycle event can't push a tick that partially defeats the stash.
+  // Meta always applies — consumers need it for correctness on return.
+  if (typeof document !== "undefined" && document.hidden) {
+    pendingHiddenTick = nextTick;
+  } else {
+    tickSnapshot = nextTick;
+    emitTick();
+  }
   emitMeta();
 }
 
@@ -117,14 +126,17 @@ async function refreshNow(): Promise<void> {
 }
 
 let metaBridgeStarted = false;
-const metaBridgeUnlisteners: Promise<UnlistenFn>[] = [];
 
 function activateMetaBridge(): void {
   if (metaBridgeStarted) return;
   metaBridgeStarted = true;
   refreshNow();
+  // FE-APP-3: the meta bridge is intentionally app-lifetime — these listeners
+  // are never torn down, so we deliberately don't retain unlisten handles
+  // (the old metaBridgeUnlisteners array was dead state implying a teardown
+  // path that never existed).
   for (const name of REFRESH_EVENTS) {
-    metaBridgeUnlisteners.push(listen(name, () => refreshNow()));
+    void listen(name, () => refreshNow());
   }
 }
 
