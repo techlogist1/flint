@@ -292,22 +292,11 @@ pub fn rebuild(conn: &mut Connection) -> Result<(), String> {
         let Some((session, intervals)) = parse_session_json(&value) else {
             continue;
         };
-        let tags_json = serde_json::to_string(&session.tags).unwrap_or_else(|_| "[]".into());
-        let intervals_json = serde_json::to_string(&intervals).unwrap_or_else(|_| "[]".into());
-        tx.execute(
-            "INSERT OR REPLACE INTO sessions (id, started_at, ended_at, duration_sec, mode, tags, completed, intervals) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                session.id,
-                session.started_at,
-                session.ended_at,
-                session.duration_sec,
-                session.mode,
-                tags_json,
-                session.completed as i64,
-                intervals_json,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        // RUST-CACHE-8: reuse the single insert_session path (Transaction
+        // derefs to Connection) instead of duplicating the INSERT, so a future
+        // column or serialization change can't diverge between the live upsert
+        // and rebuild ingestion paths.
+        insert_session(&tx, &session, &intervals)?;
         inserted += 1;
     }
     tx.commit().map_err(|e| e.to_string())?;
