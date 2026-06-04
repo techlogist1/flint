@@ -44,6 +44,7 @@ export function FlintSelect({
     ),
   );
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
   const listId = useId();
 
   const selected = options.find((o) => o.value === value);
@@ -67,6 +68,16 @@ export function FlintSelect({
       setActiveIndex(idx >= 0 ? idx : 0);
     }
   }, [open, options, value]);
+
+  // FE-FORMS-3: keep the keyboard-active option in view for long option lists
+  // (e.g. a plugin `select` config field with many options).
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.children[activeIndex] as
+      | HTMLElement
+      | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex]);
 
   const commit = useCallback(
     (v: string) => {
@@ -121,6 +132,9 @@ export function FlintSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-controls={listId}
+        aria-activedescendant={
+          open ? `${listId}-opt-${activeIndex}` : undefined
+        }
         aria-label={ariaLabel}
         disabled={disabled}
         onClick={() => !disabled && setOpen((o) => !o)}
@@ -137,6 +151,7 @@ export function FlintSelect({
       </button>
       {open && (
         <ul
+          ref={listRef}
           id={listId}
           role="listbox"
           className="absolute left-0 z-20 mt-1 min-w-full border border-[var(--border-focus)] bg-[var(--bg-elevated)] py-1"
@@ -148,6 +163,7 @@ export function FlintSelect({
             return (
               <li
                 key={opt.value}
+                id={`${listId}-opt-${idx}`}
                 role="option"
                 aria-selected={isSelected}
                 onMouseEnter={() => setActiveIndex(idx)}
