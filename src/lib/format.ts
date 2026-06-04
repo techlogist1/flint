@@ -3,7 +3,10 @@ export function isBreakInterval(intervalType: string | null | undefined): boolea
 }
 
 export function formatTime(sec: number): string {
-  const s = Math.max(0, Math.floor(sec));
+  // FE-STATS-OVERLAY-7: a non-finite input (NaN/Infinity from a malformed
+  // cache row or a missing deserialized field) would otherwise render as
+  // "NaN:NaN" straight to the user; fall back to 00:00.
+  const s = Number.isFinite(sec) ? Math.max(0, Math.floor(sec)) : 0;
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const ss = s % 60;

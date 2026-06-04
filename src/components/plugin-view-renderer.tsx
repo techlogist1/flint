@@ -575,8 +575,13 @@ function HeatmapView({
   pluginId: string;
 }) {
   const data = truncateArray(node.data, pluginId, "heatmap.data");
+  // FE-RENDER-4: mirror the bar/line chart guards — exclude non-finite values
+  // so NaN/Infinity can't become max or render a full-intensity "· NaN" cell.
   const max = data.reduce(
-    (m, d) => (typeof d.value === "number" && d.value > m ? d.value : m),
+    (m, d) =>
+      typeof d.value === "number" && Number.isFinite(d.value) && d.value > m
+        ? d.value
+        : m,
     0,
   );
   if (data.length === 0) {
@@ -592,7 +597,10 @@ function HeatmapView({
       }}
     >
       {data.map((d, idx) => {
-        const v = typeof d.value === "number" ? d.value : 0;
+        const v =
+          typeof d.value === "number" && Number.isFinite(d.value)
+            ? d.value
+            : 0;
         const ratio = max > 0 ? Math.min(1, v / max) : 0;
         const bg = ramp(ratio);
         return (
