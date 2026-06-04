@@ -228,10 +228,18 @@ export function createPluginAPI(
       await invoke("resume_session");
     },
     async signal(name, payload) {
-      const ctx: HookContext = {
-        ...(payload ?? {}),
-        source: payload?.source ?? "plugin",
-      } as HookContext;
+      // FE-PLUGIN-HOST-6: plugins are untrusted JS and may pass a non-object
+      // (string/number). Mirror emit()'s guard: only spread a real object,
+      // otherwise build a clean ctx — spreading a primitive would scatter
+      // indexed keys into a malformed context.
+      const ctx: HookContext =
+        payload && typeof payload === "object"
+          ? ({
+              ...(payload as Record<string, unknown>),
+              source:
+                (payload as { source?: string }).source ?? "plugin",
+            } as HookContext)
+          : ({ source: "plugin" } as HookContext);
       return host.runEmitPipeline(`signal:${name}`, ctx);
     },
     async setFirstInterval(opts) {
