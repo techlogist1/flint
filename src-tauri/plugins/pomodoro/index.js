@@ -31,13 +31,15 @@ function safeInvoke(fn, label) {
   try {
     var p = fn();
     if (p && typeof p.then === "function") {
-      p.catch(function () {
-        // Swallow async rejection — the engine stays consistent, we just
-        // log and move on.
+      p.catch(function (err) {
+        // Swallow async rejection so the transition still completes; log via
+        // the call-site label so a swallowed failure is diagnosable.
+        console.error("[pomodoro] " + label + " failed", err);
       });
     }
   } catch (err) {
     // Synchronous throw — same policy.
+    console.error("[pomodoro] " + label + " threw", err);
   }
 }
 
