@@ -41,13 +41,18 @@ export function OverlayApp() {
   const [surfaceOpacity, setSurfaceOpacity] = useState(1);
   useEffect(() => {
     let cancelled = false;
+    // FE-STATS-OVERLAY-5: an overlay:config push can arrive before the
+    // in-flight get_config resolves. The push is the fresher value, so once
+    // one has set opacity don't let the late get_config clobber it.
+    let pushReceived = false;
     invoke<Config>("get_config")
       .then((cfg) => {
-        if (!cancelled) setSurfaceOpacity(cfg.overlay.opacity);
+        if (!cancelled && !pushReceived) setSurfaceOpacity(cfg.overlay.opacity);
       })
       .catch(() => {});
     let unlisten: UnlistenFn | null = null;
     listen<OverlayConfigPayload>("overlay:config", (evt) => {
+      pushReceived = true;
       setSurfaceOpacity(evt.payload.opacity);
     })
       .then((fn) => {
@@ -203,15 +208,18 @@ function Pill({
   const intervalLabel = intervalLabelFor(intervalType, status, modeLabel);
 
   const target = meta?.current_interval?.target_sec;
+  // FE-STATS-OVERLAY-1: require target > 0 (not just != null) to match the
+  // main-window ProgressBar. A plugin-authored interval with target_sec: 0
+  // would otherwise compute (0-0)/0 = NaN -> scaleX(NaN), an invalid transform.
   const displayTime =
-    isActive && target != null && tick.interval_remaining != null
+    isActive && target != null && target > 0 && tick.interval_remaining != null
       ? formatTime(tick.interval_remaining)
       : isActive
         ? formatTime(tick.elapsed_sec)
         : "00:00";
 
   const progressRatio =
-    isActive && target != null && tick.interval_remaining != null
+    isActive && target != null && target > 0 && tick.interval_remaining != null
       ? Math.max(0, Math.min(1, (target - tick.interval_remaining) / target))
       : 0;
 
