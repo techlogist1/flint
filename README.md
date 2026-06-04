@@ -75,7 +75,7 @@ Every shortcut is also a command in the palette. Hotkeys are fixed in v0.1.
 
 A Flint plugin is a JavaScript module plus a `manifest.json`. Plugins receive a `flint` API object and run in a sandbox with `window`, `document`, `fetch`, `localStorage`, and Tauri internals shadowed to `undefined`. From inside that sandbox a plugin can:
 
-- **Hook the session lifecycle.** Before-hooks (`flint.hook`) can veto or mutate `session:start`, `session:pause`, `session:resume`, `session:stop`, `session:cancel`, `signal:mark`, `interval:next`, `preset:load`, `command:execute`, `notification:show`, `tag:add`, and `tag:remove`. After-hooks (`flint.on`) observe every event, including engine-fired `interval:start`, `interval:end`, `session:complete`, `app:ready`, and `app:quit`.
+- **Hook the session lifecycle.** Before-hooks (`flint.hook`) can veto or mutate `session:start`, `session:pause`, `session:resume`, `session:cancel`, `signal:mark`, `preset:load`, `command:execute`, `notification:show`, `tag:add`, and `tag:remove`. (User-initiated stop routes through `session:cancel`; there is no `session:stop` event. Transitions are driven by `setNextInterval` from an `after:interval:end` handler, not an `interval:next` hook.) After-hooks (`flint.on`) observe every event, including engine-fired `interval:start`, `interval:end`, `session:complete`, `app:ready`, and `app:quit`.
 - **Register commands.** `flint.registerCommand({ id, name, callback })` makes any action searchable from `Ctrl+P`, with optional icon, category, and informational hotkey badge.
 - **Author intervals.** `flint.setFirstInterval` and `flint.setNextInterval` push interval directives into the Rust engine's pending slots. The Pomodoro plugin drives its own focus / break / long-break math through these APIs; community timer modes ship the same way by declaring `"timer_mode": true` in the manifest.
 - **Render UI declaratively.** `flint.registerView(slot, renderFn)` returns a JSON render spec the host interprets. Supported widgets: `container`, `text`, `stat-row`, `bar-chart`, `line-chart`, `heatmap`, `table`, `button`. Plugins describe what to render, the host renders it — no JSX, no DOM.
@@ -133,8 +133,8 @@ flint.registerView("sidebar-tab", () => ({
   direction: "column",
   gap: 12,
   children: [
-    { type: "text", value: "HELLO FLINT", variant: "title" },
-    { type: "stat-row", label: "Sessions today", value: String(sessionsToday) },
+    { type: "text", value: "HELLO FLINT", style: "heading" },
+    { type: "stat-row", stats: [{ label: "Sessions today", value: String(sessionsToday) }] },
   ],
 }));
 ```
@@ -150,25 +150,25 @@ Global configuration lives at `~/.flint/config.toml` and is human-editable. The 
 ```toml
 [core]
 default_mode = "pomodoro"      # which timer mode the app opens in
-auto_finalize_on_quit = true   # finalize the running session on quit rather than dropping it
+countdown_default_min = 60     # default countdown length, in minutes
 
 [pomodoro]
-focus_duration = 25.0          # minutes
+focus_duration = 25.0          # minutes (decimals allowed, e.g. 0.5 = 30s)
 break_duration = 5.0
 long_break_duration = 15.0
 cycles_before_long = 4
 auto_start_breaks = true
-
-[countdown]
-duration = 10.0                # minutes
+auto_start_focus = false
 
 [overlay]
-corner = "top-right"           # top-left, top-right, bottom-left, bottom-right
+position = "top-right"          # top-left, top-right, bottom-left, bottom-right
 opacity = 0.95
 
 [plugins]
 # Plugin enable / disable lives here — managed from Settings → Plugins.
 ```
+
+The full set of tables (`[appearance]`, `[keybindings]`, `[tray]`, …) mirrors the `Config` struct in `src-tauri/src/config.rs`; the snippet above shows the keys you are most likely to edit by hand.
 
 Plugin-specific config schemas are authored in each plugin's `manifest.json` under `config_schema` and are rendered automatically in Settings → Plugins. Preset overrides are session-scoped and never persist back to this file.
 

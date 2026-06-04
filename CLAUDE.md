@@ -43,7 +43,7 @@ Handlers tracked per plugin id, auto-cleared on reload. `registerCoreHook` handl
 
 **Before-hookable** (mutable ctx in parens): `session:start` `(plugin_id, mode, config, tags, preset_id)`, `session:{pause,resume}` `(elapsed_sec?)`, `session:cancel` `(source?)` — fired by `wrappedStop` before `invoke("stop_session")`, `signal:mark` `(session_id, source)`, `notification:show` `(title, body, plugin_id, duration)`, `preset:load` `(preset, config_overrides)`, `tag:{add,remove}` `(tag, current_tags)`, `command:execute` `(command_id, source)`.
 
-**After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. `session:cancel` also has a before phase (see above) dispatched from `wrappedStop`; the after-phase fires once Rust has finalised. Use `interval:next` to intercept transitions.
+**After-only** (Rust-fired, no sync JS callback during a tick): `session:{complete,cancel}`, `interval:{start,end}`, `app:{ready,quit}`. `session:cancel` also has a before phase (see above) dispatched from `wrappedStop`; the after-phase fires once Rust has finalised. To drive transitions, author the next interval via `setNextInterval` from an `after:interval:end` handler (there is no `interval:next` hook event).
 
 > **No `session:stop` event.** The prior docs listed a `session:stop` before-hook; the actual pre-finalize event is `before:session:cancel` because `wrappedStop` (`src/lib/timer-actions.ts`) routes user-initiated stop through the cancel verb (matches the Rust-side after-event name).
 
@@ -100,11 +100,11 @@ Host calls `renderFn` on repaint. Force repaint via `flint.emit("view:dirty", { 
 ## Prompt primitive (`flint.prompt`)
 
 ```ts
-prompt({ title, body?, accept, decline, timeout? /* ms, cap 60000 */ })
+prompt({ title, body?, accept, decline, timeout? /* ms, floor 1000, cap 300000 (5 min) */ })
   : Promise<"accepted" | "declined" | "dismissed">
 ```
 
-Centered dialog. Enter accepts, Escape dismisses, Tab toggles. One at a time — concurrent calls queue FIFO. Missing/zero timeout = sticky. Plugin reload resolves pending prompts `"dismissed"`.
+Centered dialog. Enter accepts, Escape dismisses, Tab toggles. One at a time — concurrent calls queue FIFO. An omitted/non-numeric timeout defaults to 30000 ms; a passed `0` is floored to 1000 ms (`clampTimeout` in `plugin-prompt.tsx`). There is no sticky/never-dismiss mode in v0.1.x — every prompt auto-dismisses. Plugin reload resolves pending prompts `"dismissed"`.
 
 ## Plugin API
 
