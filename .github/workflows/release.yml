@@ -62,6 +62,22 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization. INERT until these repo secrets
+          # exist: with none set, APPLE_CERTIFICATE is empty (tauri-action
+          # skips the keychain import), APPLE_SIGNING_IDENTITY falls back to
+          # "-" (ad-hoc, matching tauri.conf.json), and the empty APPLE_ID /
+          # APPLE_PASSWORD / APPLE_TEAM_ID make tauri-action skip notarization
+          # — i.e. exactly today's ad-hoc, un-notarized build. When the secrets
+          # are added (see docs/INSTALL_MACOS.md), the same step produces a
+          # Developer ID-signed, notarized, stapled build with no further
+          # changes. All of these are ignored by the Windows build.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           args: ${{ matrix.args }}
 
@@ -76,11 +92,19 @@ jobs:
           #   which breaks `cp "$f"` with a "no such file" error on the phantom \r suffix.
           # [ -d "$f" ] — tauri-action emits the .app bundle directory alongside each .dmg;
           #   only file bundles (.msi, .exe, .dmg) should make it to the draft release.
+          # CI-BUILD-6: guard against two bundles stripping to the same name
+          # (a silent cp overwrite would drop an asset from the release).
+          declare -A seen
           echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | tr -d '\r' | while IFS= read -r f; do
             [ -z "$f" ] && continue
             [ -d "$f" ] && continue
             base=$(basename "$f")
             newbase=${base//_${VERSION}_/_}
+            if [ -n "${seen[$newbase]:-}" ]; then
+              echo "ERROR: '$base' and '${seen[$newbase]}' both map to '$newbase'" >&2
+              exit 1
+            fi
+            seen[$newbase]="$base"
             cp "$f" "release-assets/$newbase"
             echo "  $base -> $newbase"
           done
@@ -91,7 +115,16 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "Flint ${{ github.ref_name }}"
-          body: "See CHANGELOG.md for release notes."
+          body: |
+            See the [CHANGELOG](https://github.com/techlogist1/flint/blob/master/CHANGELOG.md) for full release notes.
+
+            ### Install
+            - **Windows** — run the `.msi` or `.exe`. If SmartScreen warns: **More info → Run anyway**.
+            - **macOS** — the build is not notarized, so Gatekeeper blocks it on first launch. Clear the download quarantine:
+              ```sh
+              xattr -dr com.apple.quarantine /Applications/Flint.app
+              ```
+              or right-click **Flint.app → Open**, then **System Settings → Privacy & Security → Open Anyway**. Full details: [docs/INSTALL_MACOS.md](https://github.com/techlogist1/flint/blob/master/docs/INSTALL_MACOS.md).
           draft: true
           prerelease: false
           files: release-assets/*
