@@ -164,10 +164,19 @@ pub fn load_or_create(flint_dir: &Path) -> Config {
                         "[flint] config.toml parse error: {} — preserving broken file and using defaults",
                         e
                     );
-                    // B-H4: rename the broken file before we overwrite it
-                    // with defaults, so the user can inspect/restore their
-                    // edits.
-                    crate::storage::rename_broken(&path);
+                    // B-H4: rename the broken file before we overwrite it with
+                    // defaults, so the user can inspect/restore their edits.
+                    // RUST-PERIPHERALS-1: if the rename FAILS the broken file
+                    // is still at `path`; writing defaults over it would
+                    // destroy the very edits we just promised to preserve, so
+                    // fall back to in-memory defaults without touching disk.
+                    if crate::storage::rename_broken(&path).is_none() {
+                        eprintln!(
+                            "[flint] could not move broken config.toml aside — \
+                             using in-memory defaults without overwriting it"
+                        );
+                        return Config::default();
+                    }
                 }
             }
         }
