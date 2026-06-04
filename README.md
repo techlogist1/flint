@@ -23,7 +23,7 @@ Grab the latest installer from the [releases page](https://github.com/techlogist
 | macOS (Apple Silicon) | [`Flint_aarch64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_aarch64.dmg) |
 | macOS (Intel) | [`Flint_x64.dmg`](https://github.com/techlogist1/flint/releases/latest/download/Flint_x64.dmg) |
 
-Binaries are unsigned for v0.1 — macOS: right-click → **Open**. Windows: SmartScreen → **More info** → **Run anyway**. Linux builds and signed binaries will land in a later release.
+Binaries aren't notarized yet. **macOS**: Gatekeeper blocks the app on first launch (often "Flint is damaged" on Apple Silicon) — clear the download quarantine with `xattr -dr com.apple.quarantine /Applications/Flint.app`, or right-click **Flint.app → Open** then **System Settings → Privacy & Security → Open Anyway**. Full steps: [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). **Windows**: SmartScreen → **More info** → **Run anyway**. Linux builds and notarized macOS binaries will land in a later release.
 
 ## Why Flint
 
