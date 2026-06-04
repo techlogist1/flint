@@ -1,8 +1,10 @@
 use crate::timer::{Interval, TimerState, TimerStatus};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -19,26 +21,62 @@ pub fn flint_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// S-H5 / C-M4: atomic file write. Serialises `data` to a `<path>.tmp`
-/// sibling, then renames it into place. `fs::rename` is atomic on both
-/// Windows NTFS and macOS APFS, so a crash/poweroff at any point leaves
-/// either the previous file or the new file intact — never a truncated
-/// half-write. Used for session JSON files and recovery snapshots.
+/// Monotonic counter making each temp filename unique within this process.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// S-H5 / C-M4: atomic, durable file write. Serialises `data` to a unique
+/// `<path>.<pid>.<n>.tmp` sibling, `sync_all`s the temp file's contents,
+/// then renames it into place. `fs::rename` is atomic on both Windows NTFS
+/// and macOS APFS, and the pre-rename fsync guarantees the data blocks are
+/// on disk before the directory entry is swapped — so a crash/poweroff at
+/// any point leaves either the previous file or the fully-written new file,
+/// never a truncated or zero-length half-write. The per-write unique temp
+/// name also lets two writers targeting the same destination proceed
+/// without clobbering each other's temp file (last writer wins at the
+/// atomic rename). Used for every durable path: session JSON (source of
+/// truth), recovery snapshots, presets, config.toml, state.json, plugin
+/// storage and exports.
 pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     let file_name = path
         .file_name()
         .ok_or_else(|| format!("no file name in {}", path.display()))?;
     let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     let tmp_path = path.with_file_name(tmp_name);
-    fs::write(&tmp_path, data)
-        .map_err(|e| format!("write {}: {}", tmp_path.display(), e))?;
+
+    // Write + fsync the temp file before the rename so the data blocks are
+    // durable, not merely the rename's directory-entry metadata.
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = File::create(&tmp_path)?;
+        f.write_all(data)?;
+        f.sync_all()
+    })();
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("write {}: {}", tmp_path.display(), e));
+    }
+
     fs::rename(&tmp_path, path).map_err(|e| {
         // Best-effort cleanup of the tmp file so a failed rename doesn't
-        // leak a stale sibling into the sessions/ directory.
+        // leak a stale sibling into the directory.
         let _ = fs::remove_file(&tmp_path);
         format!("rename {} -> {}: {}", tmp_path.display(), path.display(), e)
-    })
+    })?;
+
+    // On Unix, fsync the parent directory so the rename itself survives
+    // power-loss. Not required / not supported the same way on Windows.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+
+    Ok(())
 }
 
 pub fn recovery_path() -> Result<PathBuf, String> {
@@ -194,13 +232,29 @@ impl RecoveryWriter {
     pub fn flush_blocking(&self) {
         let (ack_tx, ack_rx) = std_mpsc::channel();
         if self.tx.send(RecoveryMessage::Flush(ack_tx)).is_err() {
+            eprintln!("[flint] recovery flush skipped: writer task is gone");
             return;
         }
-        let _ = ack_rx.recv_timeout(Duration::from_secs(2));
+        // Bounded so a slow disk can't hang shutdown. If the ack misses the
+        // window we still exit, but log it so a stale recovery.json on the
+        // next launch is explainable rather than silent.
+        match ack_rx.recv_timeout(FLUSH_TIMEOUT) {
+            Ok(()) => {}
+            Err(std_mpsc::RecvTimeoutError::Timeout) => eprintln!(
+                "[flint] recovery flush did not ack within {FLUSH_TIMEOUT:?}; \
+                 exiting anyway (recovery.json may be stale next launch)"
+            ),
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("[flint] recovery flush ack channel disconnected before flush")
+            }
+        }
     }
 }
 
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Upper bound on how long shutdown waits for the recovery writer to ack a
+/// final flush before exiting anyway. Deliberate don't-hang-shutdown cap.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub fn spawn_recovery_writer() -> RecoveryWriter {
     let (tx, mut rx) = tokio_mpsc::unbounded_channel::<RecoveryMessage>();
