@@ -41,6 +41,9 @@
     ],
     "category": "Productivity",
     "shortDescription": "Enter the flint state.",
-    "longDescription": "Open-source, local-first, keyboard-driven, plugin-extensible timer for focused work."
+    "longDescription": "Open-source, local-first, keyboard-driven, plugin-extensible timer for focused work.",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
