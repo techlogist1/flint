@@ -399,18 +399,29 @@ pub(crate) fn finalize_session(
     let path = storage::write_session_file(state, ended_at, completed)?;
     println!("[flint] wrote session file {}", path.display());
 
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(value) = serde_json::from_str::<Value>(&content) {
-            let cache_state = app.state::<CacheState>();
-            let guard_result = cache_state.0.lock();
-            if let Ok(guard) = guard_result {
-                if let Some(conn) = guard.as_ref() {
-                    if let Err(e) = cache::upsert_from_file(conn, &value) {
-                        eprintln!("[flint] cache upsert failed: {}", e);
+    // Cache upsert is best-effort: the session JSON above is the source of
+    // truth and the SQLite cache is rebuildable. But every failure mode is
+    // now logged (previously read/parse errors were silently swallowed) so a
+    // just-completed session missing from the list/stats until rebuild-cache
+    // is explainable rather than a silent data-integrity gap.
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<Value>(&content) {
+            Ok(value) => {
+                let cache_state = app.state::<CacheState>();
+                match cache_state.0.lock() {
+                    Ok(guard) => {
+                        if let Some(conn) = guard.as_ref() {
+                            if let Err(e) = cache::upsert_from_file(conn, &value) {
+                                eprintln!("[flint] cache upsert failed for session {session_id}: {e} (saved to disk; run rebuild-cache to reconcile)");
+                            }
+                        }
                     }
-                }
+                    Err(e) => eprintln!("[flint] cache lock poisoned during finalize of {session_id}: {e} (saved to disk; rebuild-cache to reconcile)"),
+                };
             }
-        }
+            Err(e) => eprintln!("[flint] could not parse just-written session {session_id} for cache upsert: {e} (file on disk; rebuild-cache to reconcile)"),
+        },
+        Err(e) => eprintln!("[flint] could not read back session {session_id} for cache upsert: {e} (file on disk; rebuild-cache to reconcile)"),
     }
 
     // Push the session's tags into the autocomplete index so the next idle
@@ -1279,9 +1290,19 @@ pub fn delete_session(
     std::fs::remove_file(&path)
         .map_err(|e| format!("delete session {}: {}", trimmed, e))?;
 
-    let guard = cache_state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(conn) = guard.as_ref() {
-        cache::delete_by_id(conn, trimmed)?;
+    // The source-of-truth file is gone; the SQLite cache is rebuildable, so a
+    // cache-delete failure must NOT surface as a command error — that would
+    // tell the UI the delete failed when it actually succeeded. Best-effort +
+    // log; rebuild-cache reconciles any stale row that survives.
+    match cache_state.0.lock() {
+        Ok(guard) => {
+            if let Some(conn) = guard.as_ref() {
+                if let Err(e) = cache::delete_by_id(conn, trimmed) {
+                    eprintln!("[flint] cache delete for {trimmed} failed: {e} (session file already removed; rebuild-cache to reconcile)");
+                }
+            }
+        }
+        Err(e) => eprintln!("[flint] cache lock poisoned deleting {trimmed}: {e} (session file already removed; rebuild-cache to reconcile)"),
     }
 
     Ok(())
