@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bar,
@@ -32,7 +32,14 @@ export function StatsDashboard() {
   const [error, setError] = useState<string | null>(null);
   const colors = chartColors();
 
+  // FE-STATS-OVERLAY-6: skip setState after unmount and ignore a stale load
+  // whose results resolve after a newer load started (last-write-wins on
+  // ordering, not arrival time).
+  const mountedRef = useRef(true);
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const [t, w, m, h, l] = await Promise.all([
         invoke<TodayStats>("stats_today"),
@@ -41,6 +48,7 @@ export function StatsDashboard() {
         invoke<HeatmapCell[]>("stats_heatmap", { days: 182 }),
         invoke<LifetimeTotals>("stats_lifetime"),
       ]);
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
       setToday(t);
       setWeek(w);
       setMonth(m);
@@ -48,12 +56,17 @@ export function StatsDashboard() {
       setLifetime(l);
       setError(null);
     } catch (e) {
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
       setError(String(e));
     }
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     load();
+    return () => {
+      mountedRef.current = false;
+    };
   }, [load]);
 
   useEffect(() => {
