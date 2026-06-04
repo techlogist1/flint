@@ -12,7 +12,11 @@ export interface FlintCommand {
   id: string;
   /** Display name shown in the palette. */
   name: string;
-  /** Called when the command is executed. Runs inside safeCallPlugin. */
+  /**
+   * Called when the command is executed. Plugin-owned command callbacks run
+   * under the same 5s plugin-callback budget as hooks (a hung callback is
+   * abandoned-and-logged); core commands are trusted and unbounded.
+   */
   callback: () => void | Promise<void>;
   /** Optional unicode icon prefix (consistent with Flint's terminal aesthetic). */
   icon?: string;

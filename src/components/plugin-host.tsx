@@ -457,7 +457,30 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
       const cancelled = await runBeforeHooks("command:execute", ctx);
       if (cancelled) return;
       try {
-        await Promise.resolve(command.callback());
+        const run = Promise.resolve(command.callback());
+        if (command.owner === CORE_OWNER) {
+          // Core commands are trusted app code that may legitimately run long
+          // (rebuild-cache, export); don't bound them.
+          await run;
+        } else {
+          // FIX 3 / FE-PLUGIN-HOST-1: plugin command callbacks honor the same
+          // 5s budget as every other plugin-authored callback (the CLAUDE.md
+          // invariant). A hung callback is abandoned-and-logged so
+          // after:command:execute still fires and the palette/keyboard caller
+          // is never wedged.
+          run.catch(() => {}); // swallow a late rejection if the timeout wins
+          let timeoutHandle: number | undefined;
+          const timeout = new Promise<void>((resolve) => {
+            timeoutHandle = window.setTimeout(() => {
+              console.error(
+                `[plugin-host] command "${id}" (${command.owner}) timed out after ${PLUGIN_CALLBACK_TIMEOUT_MS}ms`,
+              );
+              resolve();
+            }, PLUGIN_CALLBACK_TIMEOUT_MS);
+          });
+          await Promise.race([run, timeout]);
+          if (timeoutHandle != null) window.clearTimeout(timeoutHandle);
+        }
       } catch (err) {
         console.error(
           `[plugin-host] command "${id}" (${command.owner}) threw:`,
@@ -546,9 +569,11 @@ export function PluginHost({ children }: { children: React.ReactNode }) {
           notifyDedupRef.current.delete(k);
         }
       }
-      notifyDedupRef.current.set(dedupKey, now);
-
+      // FE-PLUGIN-HOST-3: drop on the stack cap BEFORE recording the dedup
+      // timestamp, so a notification that was never actually shown can't
+      // suppress a legitimate retry for the next NOTIFICATION_DEDUP_MS.
       if (notifyCountRef.current >= NOTIFICATION_STACK_LIMIT) return;
+      notifyDedupRef.current.set(dedupKey, now);
 
       const id = Math.random().toString(36).slice(2, 10);
       notifyCountRef.current += 1;
