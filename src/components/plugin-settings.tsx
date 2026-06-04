@@ -95,7 +95,11 @@ function PluginConfigForm({
 }) {
   const [values, setValues] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  // FE-FORMS-5: track pending saves per-key so two overlapping field saves
+  // (e.g. a debounced number field finishing while a boolean is toggled) keep
+  // independent SAVING… indicators and one finishing save can't clear
+  // another field's pending flag.
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let canceled = false;
@@ -115,7 +119,7 @@ function PluginConfigForm({
   }, [pluginId]);
 
   const save = async (key: string, value: unknown) => {
-    setPendingKey(key);
+    setPendingKeys((prev) => new Set(prev).add(key));
     setError(null);
     try {
       await invoke("set_plugin_config", { pluginId, key, value });
@@ -124,7 +128,11 @@ function PluginConfigForm({
     } catch (e) {
       setError(String(e));
     } finally {
-      setPendingKey(null);
+      setPendingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -144,7 +152,7 @@ function PluginConfigForm({
             fieldKey={key}
             field={field}
             value={current}
-            pending={pendingKey === key}
+            pending={pendingKeys.has(key)}
             onChange={(v) => save(key, v)}
           />
         );
