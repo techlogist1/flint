@@ -133,13 +133,17 @@ fn apply_recovery(rec: storage::RecoveryFile, now: chrono::DateTime<chrono::Utc>
 
     state.session_id = Some(rec.session_id);
     state.started_at = Some(rec.started_at);
-    state.elapsed_sec = rec.elapsed_sec + extra_sec;
+    // saturating_add: rec.* come straight from serde-deserialised recovery.json
+    // (external, user-editable, possibly corrupt). A bogus near-u64::MAX value
+    // would otherwise panic this startup path in debug builds and wrap in
+    // release; saturate instead of trusting the on-disk number.
+    state.elapsed_sec = rec.elapsed_sec.saturating_add(extra_sec);
     state.mode = rec.mode;
     state.status = status;
     state.tags = rec.tags;
     state.completed_intervals = rec.intervals;
     state.current_interval = rec.current_interval.map(|mut ci| {
-        ci.elapsed_sec += extra_sec;
+        ci.elapsed_sec = ci.elapsed_sec.saturating_add(extra_sec);
         ci
     });
     state.recovery_pending = true;
@@ -306,10 +310,14 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(1));
                 // FIX 7: if a tick body stalls past its 1 s slot, skip the
-                // backlog instead of firing a burst of catch-up ticks. The
-                // engine is wall-clock-driven (not tick-counter-driven), so
-                // a skipped tick just means the next tick picks up where we
-                // left off — no state is lost.
+                // backlog instead of firing a burst of catch-up ticks. NB the
+                // running engine counts one second per *fired* tick (tick_once
+                // does elapsed_sec += 1), so it is tick-driven, not wall-clock-
+                // driven: ticks missed during a stalled body or OS sleep are
+                // dropped, not recovered, and elapsed_sec undercounts by that
+                // gap until the next restart — where apply_recovery's wall-clock
+                // delta from last_saved_at corrects it. Skip only prevents the
+                // catch-up burst; it does not make missed time reappear.
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                 ticker.tick().await;
                 loop {
