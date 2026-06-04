@@ -695,9 +695,14 @@ pub fn set_plugin_enabled(
     app: AppHandle,
 ) -> Result<(), String> {
     let mut cfg = config.0.lock().map_err(|e| e.to_string())?;
-    cfg.plugins.enabled.insert(plugin_id, enabled);
+    // Persist first, swap the live config in only on success — a failed write
+    // must not leave the running app honoring an unsaved enable/disable toggle
+    // (which list_plugins/tray would then report while config.toml disagrees).
+    let mut next = cfg.clone();
+    next.plugins.enabled.insert(plugin_id, enabled);
     let dir = storage::flint_dir()?;
-    config::save(&dir, &cfg)?;
+    config::save(&dir, &next)?;
+    *cfg = next;
     drop(cfg);
     // Rebuild the tray menu so any newly enabled/disabled timer-mode plugin
     // shows up (or disappears) in the right-click menu without a restart.
@@ -809,10 +814,13 @@ pub fn set_plugin_config(
     let mut full = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
     set_path(&mut full, &format!("{}.{}", section, key), value.clone())?;
     let new_cfg: Config = serde_json::from_value(full).map_err(|e| e.to_string())?;
-    *cfg = new_cfg.clone();
 
+    // Persist first; swap the in-memory config in only after the write
+    // succeeds, so a failed save never leaves the running app honoring a
+    // value that isn't in config.toml.
     let dir = storage::flint_dir()?;
-    config::save(&dir, &cfg)?;
+    config::save(&dir, &new_cfg)?;
+    *cfg = new_cfg;
     Ok(value)
 }
 
