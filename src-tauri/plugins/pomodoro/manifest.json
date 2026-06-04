@@ -7,7 +7,7 @@
   "type": "default",
   "entry": "index.js",
   "ui_slots": ["settings"],
-  "events": ["session:start", "interval:end", "session:complete"],
+  "events": ["session:start", "interval:end", "session:complete", "session:cancel"],
   "timer_mode": true,
   "config_section": "pomodoro",
   "config_schema": {

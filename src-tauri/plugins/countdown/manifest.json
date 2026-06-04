@@ -7,7 +7,7 @@
   "type": "default",
   "entry": "index.js",
   "ui_slots": ["settings"],
-  "events": ["session:start", "interval:end"],
+  "events": ["interval:end"],
   "timer_mode": true,
   "config_section": "core",
   "config_schema": {
