@@ -152,6 +152,19 @@ pub fn load_community(plugins_dir: &Path) -> Vec<LoadedPlugin> {
         };
         manifest.plugin_type = "community".into();
 
+        // RUST-PLATFORM-2: the manifest id becomes a tray menu id, a config
+        // enablement key, a React render key and the sandbox plugin id. An
+        // empty/whitespace id pollutes all of those (a `start_mode::` tray
+        // entry, a blank config key). Builtins are checked against their
+        // expected id; give community ids the same minimal sanity check.
+        if manifest.id.trim().is_empty() {
+            eprintln!(
+                "[flint] community plugin manifest at {} has an empty id — skipping",
+                manifest_path.display()
+            );
+            continue;
+        }
+
         // S-H1: canonicalize plugin dir and the resolved entry path, and
         // reject anything that escapes the plugin dir (e.g. `entry:
         // "../../../Windows/System32/calc.exe"`). Without this, a malicious
@@ -210,10 +223,18 @@ pub fn load_all(community_dir: &Path) -> Vec<LoadedPlugin> {
     let mut all = load_builtins();
     let community = load_community(community_dir);
     for c in community {
-        if all.iter().any(|p| p.manifest.id == c.manifest.id) {
+        if let Some(existing) = all.iter().find(|p| p.manifest.id == c.manifest.id) {
+            // RUST-PLATFORM-1: the collision may be against a builtin OR an
+            // earlier community plugin with the same id; report the real cause
+            // instead of always blaming a builtin.
+            let cause = if existing.builtin {
+                "shadowed by a builtin"
+            } else {
+                "duplicate id with another installed plugin"
+            };
             eprintln!(
-                "[flint] community plugin '{}' shadowed by builtin — skipping",
-                c.manifest.id
+                "[flint] community plugin '{}' {} — skipping",
+                c.manifest.id, cause
             );
             continue;
         }
