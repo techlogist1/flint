@@ -128,7 +128,11 @@ fn compute_corner_position(app: &AppHandle, position: &str) -> Option<(f64, f64)
         // Default / unknown / "top-right" → the PRD default.
         _ => (right_x, top_y),
     };
-    Some((x, y))
+    // RUST-PLATFORM-3: on a work area narrower/shorter than the fixed overlay
+    // the right/bottom anchors go negative and push the window partly off the
+    // left/top edge. Clamp so the top-left corner never precedes the monitor
+    // origin.
+    Some((x.max(monitor_x), y.max(monitor_y)))
 }
 
 /// O-H3: public entry point used by `update_config` to live-apply overlay
