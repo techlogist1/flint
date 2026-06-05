@@ -4,6 +4,37 @@ All notable changes to Flint will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-06-05 — Hardening + macOS Install
+
+A focused hardening pass: 24 safe, one-concern-per-commit fixes across storage durability, the Rust engine and cache, the plugin host, the frontend, and the built-in plugins — plus a real macOS install experience. No plugin-API behavior changes and no v0.2.0 SDK surface. Every gate stayed green: `tsc`, `vite build`, `cargo clippy -D warnings`, and 43/43 tests.
+
+### Reliability & storage
+
+- **Durable atomic writes.** `write_atomic` now fsyncs the temp file and its parent directory around the rename and uses a unique per-write temp name, so a crash or a concurrent write can't leave durable state truncated; the recovery flush logs on timeout instead of failing silently.
+- **Safe config-write ordering.** Plugin enable/disable and config changes persist to disk *before* the in-memory config is mutated, and `load_or_create` no longer clobbers a broken `config.toml` when the `.broken` rename fails.
+- **Cache robustness.** Finalize/delete cache failures are now logged rather than swallowed (in every mode); a redundant streak pass and an unusable index were removed, `heatmap` guards non-positive ranges, and cache rebuild reuses the single INSERT path.
+- **Engine recovery.** Recovery arithmetic uses saturating math so clock skew can't underflow it; a misleading "wall-clock-driven" tick-loop comment was corrected.
+
+### Plugin host & frontend
+
+- **Plugin callbacks honor the 5-second budget.** Plugin-registered command callbacks now run under the same 5 s timeout as every other plugin-authored function (core commands stay unbounded); notification dedup is recorded only after the visible-stack cap check.
+- **Frontend NaN / race / leak guards.** `formatTime`, the heatmap, and the overlay progress bar reject non-finite values (no more `scaleX(NaN)`); the stats dashboard cancels stale and post-unmount loads; the debounced sidebar-save timer is cleared on unmount; `Ctrl`+digit always `preventDefault`s.
+- **Accessibility & forms.** `FlintSelect` exposes `aria-activedescendant` and scrolls the active option into view; the plugin config form tracks pending saves per key; `signal()` guards non-object payloads like `emit()`.
+
+### Built-in plugins
+
+- **Countdown** finalizes the session before firing its cosmetic completion notification and wraps `getTimerState`; **Pomodoro**'s `safeInvoke` now logs via its label; each manifest's `events` array matches the plugin's actual subscriptions.
+
+### macOS install
+
+- **Ad-hoc signing by default.** The bundle is signed with `signingIdentity: "-"`, which clears the "Flint.app is damaged" Gatekeeper prompt on a downloaded build — you get the standard "unidentified developer → Open Anyway" flow instead, until full notarization is enabled.
+- **Notarization pipeline, inert.** A full Developer-ID signing + notarization + stapling pipeline is wired into `release.yml` but stays inert until the Apple repo secrets exist, so today's build is exactly the ad-hoc, un-notarized one with no further code changes needed to flip it on.
+- **Install docs.** New `docs/INSTALL_MACOS.md` with quarantine-clear steps and a maintainer setup guide; the README macOS instructions were corrected to match.
+
+### Docs
+
+- **Doc-honesty corrections.** Removed the phantom `session:stop` / `interval:next` events from the README and CLAUDE.md, fixed the `config.toml` example and the minimal-plugin render-widget list, and corrected the prompt timeout / no-sticky-mode claims so the docs describe what the code actually does.
+
 ## [0.1.3] — 2026-04-18 — Bugfix + Stability
 
 v0.1.3 is the first release where plugin activation works end-to-end in installed binaries. The headline bug — CSP blocking every plugin's sandbox — had been latent since before v0.1.1 but only surfaced in release builds (dev mode loads over HTTP with no CSP). If you tried Flint before and noticed plugins were broken, this release fixes it.

@@ -22,7 +22,7 @@ assignees: ''
 
 ## Environment
 
-- **Flint version:** <!-- e.g. v0.1.3 -->
+- **Flint version:** <!-- e.g. v0.1.4 -->
 - **OS:** <!-- e.g. Windows 11, macOS 14.5 (Intel / Apple Silicon) -->
 - **Install source:** <!-- GitHub Releases MSI / NSIS / DMG, or built from source -->
 
