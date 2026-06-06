@@ -57,27 +57,63 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Tauri app
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
+      # macOS signing/notarization is INERT by default and self-enabling.
+      #
+      # The Apple vars must be *absent* from the environment — not merely empty —
+      # when no secrets are configured. Passing e.g. `APPLE_CERTIFICATE: ${{ ... }}`
+      # directly on the build step sets it to an empty string when the secret is
+      # missing, and that empty-but-*present* value makes tauri-bundler take the
+      # "import this certificate" path: it runs `security import` on an empty cert
+      # and the whole macOS build fails with
+      #   "failed codesign application: failed to run command security import:
+      #    failed to import keychain certificate".
+      # (tauri-action's own JS check treats empty as falsy and skips, but the Rust
+      #  bundler underneath treats the var as present — hence the trap.)
+      #
+      # So we forward the vars through $GITHUB_ENV from a script step that only
+      # emits them when APPLE_CERTIFICATE is non-empty. No secrets → nothing emitted
+      # → APPLE_CERTIFICATE stays unset → tauri-bundler does a clean ad-hoc sign
+      # (signingIdentity "-" from tauri.conf.json), un-notarized — exactly today's
+      # intended build. Add the secrets (see docs/INSTALL_MACOS.md) and the same
+      # workflow produces a Developer-ID-signed, notarized, stapled build with no
+      # further changes. macOS-only; the Windows build is untouched.
+      - name: Configure Apple code signing
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS code signing + notarization. INERT until these repo secrets
-          # exist: with none set, APPLE_CERTIFICATE is empty (tauri-action
-          # skips the keychain import), APPLE_SIGNING_IDENTITY falls back to
-          # "-" (ad-hoc, matching tauri.conf.json), and the empty APPLE_ID /
-          # APPLE_PASSWORD / APPLE_TEAM_ID make tauri-action skip notarization
-          # — i.e. exactly today's ad-hoc, un-notarized build. When the secrets
-          # are added (see docs/INSTALL_MACOS.md), the same step produces a
-          # Developer ID-signed, notarized, stapled build with no further
-          # changes. All of these are ignored by the Windows build.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "No APPLE_CERTIFICATE secret set — building ad-hoc-signed (signingIdentity '-'), un-notarized."
+            exit 0
+          fi
+          echo "APPLE_CERTIFICATE present — enabling Developer-ID signing + notarization."
+          # Multiline-safe write to $GITHUB_ENV (handles base64 cert line-wrapping).
+          emit() { printf '%s<<__FLINT_ENV_EOF__\n%s\n__FLINT_ENV_EOF__\n' "$1" "$2" >> "$GITHUB_ENV"; }
+          emit APPLE_CERTIFICATE          "$APPLE_CERTIFICATE"
+          emit APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+          emit KEYCHAIN_PASSWORD          "$KEYCHAIN_PASSWORD"
+          emit APPLE_ID                   "$APPLE_ID"
+          emit APPLE_PASSWORD             "$APPLE_PASSWORD"
+          emit APPLE_TEAM_ID              "$APPLE_TEAM_ID"
+          # Use the supplied Developer-ID identity; fall back to ad-hoc "-" if unset.
+          emit APPLE_SIGNING_IDENTITY     "${APPLE_SIGNING_IDENTITY:--}"
+
+      - name: Build Tauri app
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Apple signing/notarization vars (if any) are injected via $GITHUB_ENV by
+          # the "Configure Apple code signing" step above — intentionally absent here
+          # so they are never set to empty strings. See that step's comment block.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
 
